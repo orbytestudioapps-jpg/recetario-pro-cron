@@ -1,0 +1,23 @@
+name: run-process-provider-jobs
+
+on:
+  schedule:
+    - cron: '*/2 * * * *'   # Corre cada 2 minutos
+  workflow_dispatch:         # Permite ejecutarlo manualmente
+
+jobs:
+  process-lotes:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Ejecutar función process-provider-jobs
+        run: |
+          echo "Llamando a Supabase: process-provider-jobs"
+          curl -X POST \
+            "${SUPABASE_URL}/functions/v1/process-provider-jobs" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+            -d '{}'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
