@@ -1,52 +1,52 @@
-name: Provider OCR Jobs (Google Vision)
+name: Provider OCR – Google Vision
 
 on:
+  # 👉 Lo puedes lanzar a mano desde la pestaña "Actions"
+  workflow_dispatch:
+
+  # 👉 Cron automático cada 5 minutos (hora UTC)
   schedule:
-    - cron: "*/1 * * * *"   # cada 1 minuto
-  workflow_dispatch: {}      # ejecución manual
+    - cron: "*/5 * * * *"
+
+concurrency:
+  group: provider-ocr-google
+  cancel-in-progress: false
 
 jobs:
-  process_provider_jobs:
+  run-ocr:
     runs-on: ubuntu-latest
 
-    env:
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
-
     steps:
-      - name: Checkout repo
+      # 1) Obtener el repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ---------------------------------------
-      # 🟦 Crear archivo JSON del service account
-      # ---------------------------------------
-      - name: Setup Google credentials
-        run: |
-          echo "$GOOGLE_APPLICATION_CREDENTIALS_JSON" > $HOME/gcloud_key.json
-          echo "GOOGLE_APPLICATION_CREDENTIALS=$HOME/gcloud_key.json" >> $GITHUB_ENV
-
-      # ---------------------------------------
-      # 🟦 Configurar Python
-      # ---------------------------------------
-      - name: Set up Python 3.11
+      # 2) Configurar Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.10"
 
-      # ---------------------------------------
-      # 🟦 Instalar dependencias
-      # ---------------------------------------
+      # 3) Instalar dependencias para el script
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip wheel setuptools
-          pip install google-cloud-vision
-          pip install supabase
-          pip install requests
+          python -m pip install --upgrade pip
+          pip install "supabase-py>=2.3.0" google-cloud-vision requests
 
-      # ---------------------------------------
-      # 🟦 Ejecutar script
-      # ---------------------------------------
-      - name: Run Google Vision OCR processor
+      # 4) Crear el JSON de credenciales de Google a partir del secret
+      - name: Create Google credentials file
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
+        run: |
+          # Guardar el JSON en un archivo
+          printf '%s' "$GOOGLE_APPLICATION_CREDENTIALS_JSON" > "$HOME/gcloud-key.json"
+          # Exportar ruta para las librerías de Google
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$HOME/gcloud-key.json" >> $GITHUB_ENV
+
+      # 5) Ejecutar el procesador de jobs
+      - name: Run OCR job processor
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           python scripts/process_provider_jobs_vision.py
