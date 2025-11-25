@@ -140,46 +140,98 @@ def parse_items_inteligente(text):
     # 🔸 PARSER VERTICAL FLEXIBLE (3 líneas O disperso)
     # ----------------------------------------------------------
     def parse_vertical(lines):
-        productos = []
-        i = 0
+       productos = []
+    i = 0
 
-        while i < len(lines):
-            nombre = lines[i]
-            formato = None
-            precio = None
+    precio_re = re.compile(r"(\d+[.,]\d{1,2})\s*€?")
+    formato_re = re.compile(
+        r"\b((\d+\s?)?(gr|kg|KG|und|UND|uds|Uds|bandeja|manojo))\b",
+        re.IGNORECASE
+    )
 
-            # Buscar en las 4 siguientes líneas
-            for j in range(1, 5):
-                if i + j >= len(lines):
-                    break
-                l = lines[i + j]
+    while i < len(lines):
 
-                pm = precio_re.search(l)
-                if pm and precio is None:
-                    precio = float(pm.group(1).replace(",", "."))
+        linea = lines[i]
 
-                if formato_re.search(l) and formato is None:
-                    formato = l
+        # ============================================
+        # 1) Buscar nombre + formato en la MISMA línea
+        # Ej: "Granadas Kg"
+        # ============================================
+        partes = linea.split()
 
-                if precio and formato:
-                    break
+        nombre = None
+        formato = None
+        precio = None
 
-            if precio:
-                productos.append({
-                    "nombre": nombre,
-                    "precio": precio,
-                    "unidad_base": "unidad",
-                    "cantidad_presentacion": 1,
-                    "formato_presentacion": formato or "",
-                    "iva_porcentaje": 10,
-                    "merma": 0,
-                })
+        # Detectar formato dentro de la línea
+        for p in partes:
+            if formato_re.match(p):
+                formato = p
+                break
 
+        # Si encontramos formato, el nombre es el resto
+        if formato:
+            nombre = linea.replace(formato, "").strip()
+
+        # ============================================
+        # 2) Buscar precio en la misma línea
+        # ============================================
+        pm = precio_re.search(linea)
+        if pm:
+            precio = float(pm.group(1).replace(",", "."))
+
+        # ============================================
+        # 3) Si no hay precio, buscar en líneas siguientes
+        #    1 o 2 líneas más abajo
+        # ============================================
+        if precio is None:
+            for j in range(1, 3):
+                if i + j < len(lines):
+                    pm2 = precio_re.search(lines[i + j])
+                    if pm2:
+                        precio = float(pm2.group(1).replace(",", "."))
+                        break
+
+        # ============================================
+        # 4) Si no hay formato pero parece receta vertical:
+        #    Nombre en una línea, formato en la siguiente
+        # ============================================
+        if not formato and i + 1 < len(lines):
+            if formato_re.match(lines[i + 1]):
+                formato = lines[i + 1].strip()
+
+        # ============================================
+        # 5) Validación para evitar basura tipo “Kg”, “1.09€”
+        # ============================================
+        if nombre:
+            if len(nombre) < 2:
+                nombre = None
+
+        # ============================================
+        # 6) Si tenemos nombre + precio → es un producto válido
+        # ============================================
+        if nombre and precio is not None:
+            productos.append({
+                "nombre": nombre,
+                "precio": precio,
+                "unidad_base": "unidad",
+                "cantidad_presentacion": 1,
+                "formato_presentacion": formato or "",
+                "iva_porcentaje": 10,
+                "merma": 0,
+            })
+
+            # Saltar líneas consumidas
+            if 'j' in locals() and j > 0:
                 i += j + 1
             else:
                 i += 1
 
-        return productos
+        else:
+            # Si no hay match, avanzar normalmente
+            i += 1
+
+    return productos
 
     # ----------------------------------------------------------
     # 🧠 DECISIÓN AUTOMÁTICA
