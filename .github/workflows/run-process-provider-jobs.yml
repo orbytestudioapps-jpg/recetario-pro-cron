@@ -11,9 +11,9 @@ jobs:
 
     steps:
       - name: Install Supabase CLI v1 (working)
-       uses: supabase/setup-cli@v0.9.5
+        uses: supabase/setup-cli@v0.9.5
         with:
-          version: "1.151.3"   # 👈 Versión con "supabase functions invoke"
+          version: "1.151.3"   # 👈 CLI v1 con "functions invoke"
 
       - name: Run process-provider-jobs
         env:
@@ -26,5 +26,6 @@ jobs:
             --no-verify-jwt \
             --debug \
             --env SUPABASE_SERVICE_ROLE_KEY="$SUPABASE_SERVICE_ROLE_KEY"
+
 
 
