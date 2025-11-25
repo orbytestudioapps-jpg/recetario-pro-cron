@@ -36,64 +36,79 @@ def ocr_google(url: str) -> str:
 # 📌 Parseo simple temporal
 # ================================
 def parse_items(text):
-    """
-    PARSEO AVANZADO PARA LISTAS DE PRECIOS
-    --------------------------------------
-    - Detecta precios en cualquier lugar de la línea
-    - Soporta formatos: 2.49, 2,49, 2.49€, 2,49€, 4.50€ cartón
-    - Limpia encabezados, líneas vacías y ruido
-    """
 
-    print("\n🟦 OCR RAW TEXT:")
-    print(text[:500], "...")  # preview
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    items = []
 
-    lines = text.split("\n")
-    results = []
+    # ==========================================================
+    # 🔍 1) DETECCIÓN DE TABLA HORIZONTAL
+    # ==========================================================
+    header_keywords = ["CÓDIGO", "CODIGO", "FORMATO", "PVP", "€/KG", "€/kg"]
 
-    # Regex de precio mejorado
-    price_regex = re.compile(
-        r"(\d+[.,]\d{1,2})\s*€?|€\s*(\d+[.,]\d{1,2})"
-    )
+    if any(h.lower() in text.lower() for h in header_keywords):
+        print("🔎 Página detectada como TABLA → usando parser horizontal")
 
-    for line in lines:
-        raw = line.strip()
+        fila_re = re.compile(
+            r"^(?P<codigo>[A-Za-z0-9\-]+)\s+"
+            r"(?P<nombre>.+?)\s+"
+            r"(?P<formato>\d.*?(Kg|kg|g|G|Caja|caja|x\s*\d).*?)\s+"
+            r"(?P<pvp_unidad>\d+[.,]\d{1,2})\s*€?/Kg?"
+        )
 
-        if len(raw) < 3:
-            continue
+        for line in lines:
+            m = fila_re.search(line)
+            if m:
+                nombre = m.group("nombre").strip()
+                precio = float(m.group("pvp_unidad").replace(",", "."))
+                formato = m.group("formato")
 
-        # ignorar encabezados
-        if raw.lower() in ["huevos", "verduras", "frutas", "precios"]:
-            continue
+                items.append({
+                    "nombre": nombre,
+                    "precio": precio,
+                    "unidad_base": "kg",
+                    "cantidad_presentacion": 1,
+                    "formato_presentacion": formato,
+                    "iva_porcentaje": 10,
+                    "merma": 0,
+                })
 
-        # buscar precio en cualquier parte
-        match = price_regex.search(raw)
-        if not match:
-            continue
+        print(f"🟩 ITEMS extraídos en modo horizontal: {len(items)}")
+        return items
 
-        # extraer precio
-        precio_str = match.group(1) or match.group(2)
-        precio = float(precio_str.replace(",", "."))
+    # ==========================================================
+    # 🔍 2) PARSER VERTICAL CLÁSICO
+    # ==========================================================
+    print("🔎 Página detectada como LISTA VERTICAL → usando parser vertical")
 
-        # eliminar precio para obtener el nombre
-        nombre = raw.replace(match.group(0), "").strip(" -:·|")
+    precio_re = re.compile(r"(\d+[.,]\d{1,2})\s*€?")
 
-        if len(nombre) < 2:
-            continue
+    i = 0
+    while i < len(lines) - 2:
+        nombre = lines[i]
+        formato = lines[i + 1]
+        linea_precio = lines[i + 2]
 
-        print(f"🔍 Detectado item → '{nombre}' : {precio}")
+        precio_match = precio_re.search(linea_precio)
 
-        results.append({
-            "nombre": nombre,
-            "precio": precio,
-            "unidad_base": "unidad",
-            "cantidad_presentacion": 1,
-            "formato_presentacion": "",
-            "iva_porcentaje": 10,
-            "merma": 0,
-        })
+        if precio_match:
+            precio = float(precio_match.group(1).replace(",", "."))
 
-    print(f"\n🟩 TOTAL ITEMS DETECTADOS: {len(results)}\n")
-    return results
+            items.append({
+                "nombre": nombre,
+                "precio": precio,
+                "unidad_base": "unidad",
+                "cantidad_presentacion": 1,
+                "formato_presentacion": formato,
+                "iva_porcentaje": 10,
+                "merma": 0,
+            })
+
+            i += 3
+        else:
+            i += 1
+
+    print(f"🟩 ITEMS extraídos en modo vertical: {len(items)}")
+    return items
 
 
 # ================================
