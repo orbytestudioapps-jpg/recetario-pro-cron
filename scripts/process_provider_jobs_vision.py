@@ -201,37 +201,196 @@ def parse_items_inteligente(text):
                 formato = lines[i + 1].strip()
 
         # ============================================
-        # 5) Validación para evitar basura tipo “Kg”, “1.09€”
-        # ============================================
-        if nombre:
-            if len(nombre) < 2:
-                nombre = None
+def parse_items_inteligente(text):
+    # Normalizamos
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
 
-        # ============================================
-        # 6) Si tenemos nombre + precio → es un producto válido
-        # ============================================
-        if nombre and precio is not None:
-            productos.append({
-                "nombre": nombre,
-                "precio": precio,
-                "unidad_base": "unidad",
-                "cantidad_presentacion": 1,
-                "formato_presentacion": formato or "",
-                "iva_porcentaje": 10,
-                "merma": 0,
-            })
+    # Regex compartidos
+    precio_re = re.compile(r"(\d+[.,]\d{1,2})\s*€?")
+    # admite "Kg", "kg", "KG", "100gr", "30 UND", "Bandeja", "manojo"...
+    formato_re = re.compile(
+        r"\b((\d+\s*)?(gr|kg|KG|und|UND|uds|Uds|bandeja|Bandeja|manojo|Manojo))\b",
+        re.IGNORECASE,
+    )
+    lambweston_re = re.compile(r"^[A-Z]{2}\d{3,}")
 
-            # Saltar líneas consumidas
-            if 'j' in locals() and j > 0:
-                i += j + 1
+    # Palabras que nunca deben ser nombre de producto
+    blacklist_nombres = {
+        "FORMATO",
+        "PRECIO",
+        "PVP",
+        "CÓDIGO",
+        "CODIGO",
+        "FRUTAS JAVIER CUEVAS S.L",
+    }
+
+    # ----------------------------------------------------------
+    # 💡 DETECCIÓN AUTOMÁTICA DEL TIPO DE PÁGINA
+    # ----------------------------------------------------------
+    def es_tabla_horizontal(lines):
+        columnas = 0
+        for l in lines:
+            partes = l.split()
+            if len(partes) >= 3:
+                columnas += 1
+        return columnas > 6    # bastantes filas "anchas"
+
+    def es_lambweston(lines):
+        return any(lambweston_re.match(l) for l in lines)
+
+    # ----------------------------------------------------------
+    # 🔷 PARSER TIPO LAMBWESTON
+    # ----------------------------------------------------------
+    def parse_lambweston(lines):
+        productos = []
+        for i in range(len(lines)):
+            l = lines[i]
+            if lambweston_re.match(l):
+                # código = l  # ahora mismo no lo usamos
+                nombre = lines[i + 1] if i + 1 < len(lines) else ""
+                formato = lines[i + 2] if i + 2 < len(lines) else ""
+
+                # Buscar precio kg o caja en las 3 siguientes líneas
+                precio_lineas = lines[i + 3 : i + 6]
+                precio = None
+                for pl in precio_lineas:
+                    pm = precio_re.search(pl)
+                    if pm:
+                        precio = float(pm.group(1).replace(",", "."))
+                        break
+
+                if precio is None:
+                    continue
+
+                productos.append(
+                    {
+                        "nombre": nombre.replace('"', "").strip(),
+                        "precio": precio,
+                        "unidad_base": "unidad",
+                        "cantidad_presentacion": 1,
+                        "formato_presentacion": formato,
+                        "iva_porcentaje": 10,
+                        "merma": 0,
+                    }
+                )
+
+        return productos
+
+    # ----------------------------------------------------------
+    # 🔶 PARSER TABLA HORIZONTAL GENÉRICO
+    # ----------------------------------------------------------
+    def parse_tabla_horizontal(lines):
+        productos = []
+        for l in lines:
+            partes = [p.strip() for p in re.split(r"\s{2,}", l)]
+            if len(partes) < 2:
+                continue
+
+            nombre = partes[0]
+            precio = None
+            formato = ""
+
+            for p in partes:
+                pm = precio_re.search(p)
+                if pm:
+                    precio = float(pm.group(1).replace(",", "."))
+                if formato_re.search(p):
+                    formato = p
+
+            if precio is not None and nombre.upper() not in blacklist_nombres:
+                productos.append(
+                    {
+                        "nombre": nombre,
+                        "precio": precio,
+                        "unidad_base": "unidad",
+                        "cantidad_presentacion": 1,
+                        "formato_presentacion": formato,
+                        "iva_porcentaje": 10,
+                        "merma": 0,
+                    }
+                )
+
+        return productos
+
+    # ----------------------------------------------------------
+    # 🔸 PARSER VERTICAL EXTENDIDO
+    #    (nombre + formato misma línea o línea siguiente,
+    #     precio misma línea o una o dos líneas debajo)
+    # ----------------------------------------------------------
+    def parse_vertical_extendido(lines):
+        productos = []
+        i = 0
+
+        while i < len(lines):
+            linea = lines[i]
+
+            partes = linea.split()
+            nombre = None
+            formato = None
+            precio = None
+
+            # 1) buscar formato en la MISMA línea (ej: "Granadas Kg")
+            for p in partes:
+                if formato_re.match(p):
+                    formato = p
+                    break
+
+            if formato:
+                nombre = linea.replace(formato, "").strip()
+            else:
+                # Si no hay formato en esta línea, el nombre es toda la línea
+                nombre = linea
+
+            # 2) precio en la MISMA línea
+            pm = precio_re.search(linea)
+            if pm:
+                precio = float(pm.group(1).replace(",", "."))
+
+            # 3) si no hay precio, buscar en las 2 siguientes líneas
+            skip = 0
+            if precio is None:
+                for offset in range(1, 3):
+                    if i + offset < len(lines):
+                        pm2 = precio_re.search(lines[i + offset])
+                        if pm2:
+                            precio = float(pm2.group(1).replace(",", "."))
+                            skip = offset
+                            break
+
+            # 4) si no hay formato y la siguiente línea ES formato
+            if not formato and i + 1 < len(lines):
+                if formato_re.match(lines[i + 1]):
+                    formato = lines[i + 1].strip()
+                    if skip == 0:
+                        skip = 1
+
+            # 5) limpieza: evitar basura tipo "Kg", "1.09€", "FORMATO", etc.
+            nombre_limpio = (nombre or "").strip()
+            if len(nombre_limpio) < 2:
+                nombre_limpio = ""
+
+            if nombre_limpio.upper() in blacklist_nombres:
+                nombre_limpio = ""
+
+            # 6) si tenemos nombre + precio → es un producto válido
+            if nombre_limpio and precio is not None:
+                productos.append(
+                    {
+                        "nombre": nombre_limpio,
+                        "precio": precio,
+                        "unidad_base": "unidad",
+                        "cantidad_presentacion": 1,
+                        "formato_presentacion": formato or "",
+                        "iva_porcentaje": 10,
+                        "merma": 0,
+                    }
+                )
+
+                i += skip + 1  # saltar líneas usadas
             else:
                 i += 1
 
-        else:
-            # Si no hay match, avanzar normalmente
-            i += 1
-
-    return productos
+        return productos
 
     # ----------------------------------------------------------
     # 🧠 DECISIÓN AUTOMÁTICA
@@ -242,8 +401,8 @@ def parse_items_inteligente(text):
     if es_tabla_horizontal(lines):
         return parse_tabla_horizontal(lines)
 
-    return parse_vertical(lines)
-
+    # Por defecto, tratamos la página como lista vertical
+    return parse_vertical_extendido(lines)
 # ================================
 # 🔄 PROCESAR UN JOB
 # ================================
