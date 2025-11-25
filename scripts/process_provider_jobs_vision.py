@@ -40,23 +40,27 @@ def parse_items(text):
     results = []
 
     for line in lines:
-        line = line.strip()
-        if len(line) < 3:
+        clean = line.strip()
+        if len(clean) < 3:
             continue
 
-        price = re.search(r"(\d+[.,]\d{1,2})$", line)
-        if not price:
+        # Precio al final, con o sin €, con coma o punto
+        match = re.search(r"(\d+[.,]\d{1,2})\s*(€)?$", clean)
+        if not match:
             continue
 
-        p = float(price.group(1).replace(",", "."))
-        name = line.replace(price.group(1), "").strip()
+        price = float(match.group(1).replace(",", "."))
+        name = clean[: match.start()].strip()
+
+        # Limpieza final del nombre
+        name = re.sub(r"\s{2,}", " ", name)
 
         if len(name) < 2:
             continue
 
         results.append({
             "nombre": name,
-            "precio": p,
+            "precio": price,
             "unidad_base": "unidad",
             "cantidad_presentacion": 1,
             "formato_presentacion": "",
