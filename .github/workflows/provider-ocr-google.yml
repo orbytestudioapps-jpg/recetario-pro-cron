@@ -30,8 +30,8 @@ jobs:
       # 3) Instalar dependencias para el script
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install "supabase-py>=2.3.0" google-cloud-vision requests
+          pip install --upgrade pip
+          pip install supabase==1.0.3 google-cloud-vision requests
 
       # 4) Crear el JSON de credenciales de Google a partir del secret
       - name: Create Google credentials file
