@@ -209,8 +209,9 @@ def process_job(job):
         # Leer OCR
         text = ocr_google(job["archivo_url"])
 
-        # Parsear items
-        items = parse_items(text)
+        # Parsear items con el parser inteligente
+        items = parse_items_inteligente(text)
+
 
         if not items:
             print("⚠️ NO SE DETECTARON ITEMS EN ESTA PÁGINA")
