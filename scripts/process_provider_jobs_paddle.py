@@ -1,16 +1,26 @@
 import os
+import json
 import requests
 from google.cloud import vision
 from supabase import create_client, Client
 
 # ================================
-# 🔧 Configuración
+# 🔑 Autenticación Google Vision
+# ================================
+credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+
+with open("google_credentials.json", "w") as f:
+    f.write(credentials_json)
+
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "google_credentials.json"
+
+# ================================
+# 🔧 Configuración Supabase
 # ================================
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
 client_vision = vision.ImageAnnotatorClient()
 
 
@@ -90,8 +100,12 @@ def process_job(job):
 
 
 def main():
-    # Buscar jobs pendientes
-    jobs = supabase.table("proveedor_listas_jobs").select("*").eq("estado", "pendiente").order("numero_pagina", desc=False).execute().data
+    jobs = (supabase.table("proveedor_listas_jobs")
+            .select("*")
+            .eq("estado", "pendiente")
+            .order("numero_pagina", desc=False)
+            .execute()
+            .data)
 
     if not jobs:
         print("No pending jobs.")
