@@ -10,24 +10,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Install Supabase CLI v1.151.3 via official installer
+      - name: Run process-provider-jobs via CURL (Service Role)
         run: |
-          echo "📦 Instalando Supabase CLI v1 (oficial)..."
-          curl -fsSL https://supabase.com/cli/install.sh | sh -s -- v1.151.3
-          sudo mv ~/.supabase/bin/supabase /usr/local/bin/supabase
-          supabase --version
-
-      - name: Run process-provider-jobs
+          echo "🚀 Llamando a process-provider-jobs con CURL..."
+          curl -X POST \
+            "https://gfgbyhcgemictofcdokd.supabase.co/functions/v1/process-provider-jobs" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+            -d '{}'
         env:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
-        run: |
-          echo "🚀 Ejecutando process-provider-jobs..."
-          supabase functions invoke process-provider-jobs \
-            --project-ref "$SUPABASE_PROJECT_REF" \
-            --no-verify-jwt \
-            --env SUPABASE_SERVICE_ROLE_KEY="$SUPABASE_SERVICE_ROLE_KEY"
-
 
 
 
