@@ -10,10 +10,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Install Supabase CLI v1 (working)
-        uses: supabase/setup-cli@v0.9.5
-        with:
-          version: "1.151.3"
+      - name: Install Supabase CLI manually (v1.151.3)
+        run: |
+          echo "📦 Instalando Supabase CLI v1..."
+          curl -L https://github.com/supabase/cli/releases/download/v1.151.3/supabase_linux_amd64.tar.gz -o supabase.tar.gz
+          tar -xvf supabase.tar.gz
+          chmod +x supabase
+          mv supabase /usr/local/bin/supabase
+          supabase --version
 
       - name: Run process-provider-jobs
         env:
