@@ -2,29 +2,27 @@ name: Provider OCR Jobs (Recetario PRO)
 
 on:
   schedule:
-    - cron: "*/1 * * * *"   # ⏰ Ejecuta cada minuto
-  workflow_dispatch:        # ▶️ Permite ejecutarlo manualmente también
+    - cron: "*/1 * * * *"
+  workflow_dispatch:
 
 jobs:
   process_provider_jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Install Supabase CLI
         uses: supabase/setup-cli@v1
-        with:
-          version: latest
 
       - name: Run process-provider-jobs
         env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
         run: |
           echo "🚀 Ejecutando process-provider-jobs..."
           supabase functions invoke process-provider-jobs \
-            --project-ref "$SUPABASE_PROJECT_ID" \
-            --no-verify-jwt
+            --project-ref "$SUPABASE_PROJECT_REF" \
+            --no-verify-jwt \
+            --debug \
+            --secret SUPABASE_SERVICE_ROLE_KEY="$SUPABASE_SERVICE_ROLE_KEY"
+
 
