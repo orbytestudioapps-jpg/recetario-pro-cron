@@ -10,8 +10,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Install Supabase CLI
+      - name: Install Supabase CLI v1 (compatible)
         uses: supabase/setup-cli@v1
+        with:
+          version: "1.151.3"   # 👈 Versión con "supabase functions invoke"
 
       - name: Run process-provider-jobs
         env:
@@ -23,6 +25,6 @@ jobs:
             --project-ref "$SUPABASE_PROJECT_REF" \
             --no-verify-jwt \
             --debug \
-            --secret SUPABASE_SERVICE_ROLE_KEY="$SUPABASE_SERVICE_ROLE_KEY"
+            --env SUPABASE_SERVICE_ROLE_KEY="$SUPABASE_SERVICE_ROLE_KEY"
 
 
