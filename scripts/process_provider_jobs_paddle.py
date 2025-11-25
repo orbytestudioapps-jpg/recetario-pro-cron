@@ -1,138 +1,109 @@
 import os
 import requests
-from io import BytesIO
-from paddleocr import PaddleOCR
-from pdf2image import convert_from_bytes
-from supabase import create_client
-import re
+from google.cloud import vision
+from supabase import create_client, Client
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+# ================================
+# 🔧 Configuración
+# ================================
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-ocr = PaddleOCR(
-    use_angle_cls=True,
-    lang="es",
-    use_gpu=False
-)
+client_vision = vision.ImageAnnotatorClient()
 
 
-def extract_items_from_text(text):
-    """
-    Parser simple: extrae "nombre + precio"
-    Ejemplo: "Ajos pelados bolsa 1kg 4.79"
-    """
-    items = []
+def ocr_google(url):
+    """Descarga la imagen desde Storage y lee texto con Google Vision."""
+    resp = requests.get(url)
+    content = resp.content
+
+    image = vision.Image(content=content)
+    response = client_vision.text_detection(image=image)
+
+    if response.error.message:
+        raise Exception(response.error.message)
+
+    return response.text_annotations[0].description if response.text_annotations else ""
+
+
+def parse_items(text):
+    """Detecta pares 'nombre + precio' usando heurística simple temporal."""
     lines = text.split("\n")
+    results = []
 
-    for l in lines:
-        l = l.strip()
-        if len(l) < 3:
+    for line in lines:
+        line = line.strip()
+        if len(line) < 3:
             continue
 
-        m = re.search(r"(\d+[.,]\d{2})$", l)
-        if not m:
+        import re
+        price = re.search(r"(\d+[.,]\d{1,2})$", line)
+        if not price:
             continue
 
-        price = float(m.group(1).replace(",", "."))
-        name = l.replace(m.group(1), "").strip()
+        p = float(price.group(1).replace(",", "."))
+        name = line.replace(price.group(1), "").strip()
 
-        items.append({
+        if len(name) < 2:
+            continue
+
+        results.append({
             "nombre": name,
-            "precio": price,
-            "unidad": "unidad",
-            "cantidad": 1,
-        })
-
-    return items
-
-
-def process_job(job):
-    print(f"📄 Procesando job {job['id']} página {job['numero_pagina']}")
-
-    # 1. Descargar la imagen desde Storage
-    resp = requests.get(job["archivo_url"])
-    if resp.status_code != 200:
-        raise Exception("No se pudo descargar archivo_url")
-
-    img_bytes = BytesIO(resp.content)
-
-    # 2. OCR
-    result = ocr.ocr(img_bytes, cls=True)
-
-    # Convertir OCR a texto continuo
-    raw_text = "\n".join([text for line in result for (_, (text, _)) in line])
-
-    # 3. Parsear productos
-    items = extract_items_from_text(raw_text)
-    print(f"🟦 Items extraídos: {items}")
-
-    # 4. Insertar items en proveedor_listas_items
-    for it in items:
-        supabase.table("proveedor_listas_items").insert({
-            "proveedor_id": job["proveedor_id"],
-            "organizacion_id": job["organizacion_id"],
-            "nombre": it["nombre"],
-            "precio": it["precio"],
+            "precio": p,
             "unidad_base": "unidad",
             "cantidad_presentacion": 1,
             "formato_presentacion": "",
             "iva_porcentaje": 10,
             "merma": 0,
-            "creado_desde_archivo": job["lista_id"]
-        }).execute()
+        })
 
-    # 5. Marcar job como procesado
-    supabase.table("proveedor_listas_jobs").update({
-        "estado": "procesado"
-    }).eq("id", job["id"]).execute()
-
-    print("✅ Job procesado OK")
+    return results
 
 
-def update_progress(lista_id):
-    a = supabase.table("proveedor_listas_jobs").select("*", count="exact") \
-        .eq("lista_id", lista_id).eq("estado", "procesado").execute()
+def process_job(job):
+    print(f"🟦 Procesando página {job['numero_pagina']} — {job['archivo_url']}")
 
-    b = supabase.table("proveedor_listas_jobs").select("*", count="exact") \
-        .eq("lista_id", lista_id).execute()
+    # Marcar procesando
+    supabase.table("proveedor_listas_jobs").update({"estado": "procesando"}).eq("id", job["id"]).execute()
 
-    procesados = a.count or 0
-    total = b.count or 0
+    try:
+        text = ocr_google(job["archivo_url"])
+        items = parse_items(text)
 
-    estado = "procesado" if procesados == total else "procesando"
+        for item in items:
+            item["proveedor_id"] = job["proveedor_id"]
+            item["organizacion_id"] = job["organizacion_id"]
+            item["creado_desde_archivo"] = job["lista_id"]
 
-    supabase.table("proveedor_listas").update({
-        "lotes_procesados": procesados,
-        "total_lotes": total,
-        "estado": estado
-    }).eq("id", lista_id).execute()
+            supabase.table("proveedor_listas_items").insert(item).execute()
 
-    print(f"📦 Progreso lista {lista_id}: {procesados}/{total}")
+        supabase.table("proveedor_listas_jobs").update({"estado": "procesado"}).eq("id", job["id"]).execute()
+
+    except Exception as e:
+        print("❌ Error OCR:", e)
+        supabase.table("proveedor_listas_jobs").update({
+            "estado": "error",
+            "error": str(e)
+        }).eq("id", job["id"]).execute()
+
+
+def main():
+    # Buscar jobs pendientes
+    jobs = supabase.table("proveedor_listas_jobs").select("*").eq("estado", "pendiente").order("numero_pagina", desc=False).execute().data
+
+    if not jobs:
+        print("No pending jobs.")
+        return
+
+    print(f"🔍 {len(jobs)} jobs encontrados.")
+
+    for job in jobs:
+        process_job(job)
+
+    print("✔ OCR finalizado.")
 
 
 if __name__ == "__main__":
-    print("🚀 Iniciando procesamiento OCR...")
-
-    # Obtener TODOS los jobs pendientes
-    jobs = supabase.table("proveedor_listas_jobs") \
-        .select("*") \
-        .eq("estado", "pendiente") \
-        .order("numero_pagina", desc=False) \
-        .execute()
-
-    if not jobs.data:
-        print("No hay jobs pendientes.")
-        exit(0)
-
-    for job in jobs.data:
-        try:
-            process_job(job)
-            update_progress(job["lista_id"])
-        except Exception as e:
-            print("❌ Error:", e)
-            supabase.table("proveedor_listas_jobs").update({
-                "estado": "error",
-                "error": str(e)
-            }).eq("id", job["id"]).execute()
+    main()
