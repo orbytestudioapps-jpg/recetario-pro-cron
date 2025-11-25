@@ -13,10 +13,10 @@ jobs:
       - name: Install Supabase CLI manually (v1.151.3)
         run: |
           echo "📦 Instalando Supabase CLI v1..."
-          curl -L https://github.com/supabase/cli/releases/download/v1.151.3/supabase_linux_amd64.tar.gz -o supabase.tar.gz
-          tar -xvf supabase.tar.gz
+          curl -L https://github.com/supabase/cli/releases/download/v1.151.3/supabase_linux_amd64.gz -o supabase.gz
+          gunzip supabase.gz
           chmod +x supabase
-          mv supabase /usr/local/bin/supabase
+          sudo mv supabase /usr/local/bin/supabase
           supabase --version
 
       - name: Run process-provider-jobs
