@@ -1,18 +1,26 @@
 import os
 import requests
 from google.cloud import vision
-from supabase import create_client, Client
+from supabase import create_client
 
 
+# ================================
+# 🔧 Configuración Supabase
+# ================================
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Google Vision client
+# ================================
+# 🔧 Cliente Google Vision OCR
+# ================================
 client_vision = vision.ImageAnnotatorClient()
 
 
+# ================================
+# 🔍 OCR con Vision API
+# ================================
 def ocr_google(url):
     resp = requests.get(url)
     image = vision.Image(content=resp.content)
@@ -25,31 +33,33 @@ def ocr_google(url):
     return response.text_annotations[0].description if response.text_annotations else ""
 
 
+# ================================
+# 🧠 Parser simple temporal
+# ================================
 def parse_items(text):
     import re
 
     results = []
-    for line in text.split("\n"):
-        clean = line.strip()
-        if len(clean) < 3:
+    lines = text.split("\n")
+
+    for line in lines:
+        line = line.strip()
+        if len(line) < 3:
             continue
 
-        # precio: 1.99  ó  1,99  ó  1.99€
-        m = re.search(r"(\d+[.,]\d{1,2})\s*€?$", clean)
-        if not m:
+        price = re.search(r"(\d+[.,]\d{1,2})$", line)
+        if not price:
             continue
 
-        precio = float(m.group(1).replace(",", "."))
+        p = float(price.group(1).replace(",", "."))
+        name = line.replace(price.group(1), "").strip()
 
-        # nombre sin precio final
-        nombre = clean.replace(m.group(1), "").replace("€", "").strip()
-
-        if len(nombre) < 2:
+        if len(name) < 2:
             continue
 
         results.append({
-            "nombre": nombre,
-            "precio": precio,
+            "nombre": name,
+            "precio": p,
             "unidad_base": "unidad",
             "cantidad_presentacion": 1,
             "formato_presentacion": "",
@@ -60,46 +70,66 @@ def parse_items(text):
     return results
 
 
+# ================================
+# 🏗 Procesar un Job
+# ================================
 def process_job(job):
-    print(f"🔎 Procesando página {job['numero_pagina']}…")
+    print(f"🟦 Procesando página {job['numero_pagina']} — {job['archivo_url']}")
 
+    # Marcar como procesando
     supabase.table("proveedor_listas_jobs").update({"estado": "procesando"}).eq("id", job["id"]).execute()
 
     try:
+        # OCR
         text = ocr_google(job["archivo_url"])
+
+        # Parser
         items = parse_items(text)
 
+        # Insertar productos
         for item in items:
             item["proveedor_id"] = job["proveedor_id"]
             item["organizacion_id"] = job["organizacion_id"]
             item["creado_desde_archivo"] = job["lista_id"]
 
-            supabase.table("proveedor_listas_items").insert(item).execute()
+            res = supabase.table("proveedor_listas_items").insert(item).execute()
+            if res.error:
+                print("❌ ERROR insert:", res.error)
 
+        # Marcar procesado
         supabase.table("proveedor_listas_jobs").update({"estado": "procesado"}).eq("id", job["id"]).execute()
 
     except Exception as e:
         print("❌ Error OCR:", e)
-        supabase.table("proveedor_listas_jobs").update({"estado": "error", "error": str(e)}).eq("id", job["id"]).execute()
+        supabase.table("proveedor_listas_jobs").update({
+            "estado": "error",
+            "error": str(e)
+        }).eq("id", job["id"]).execute()
 
 
+# ================================
+# 🚀 Main
+# ================================
 def main():
-    jobs = supabase.table("proveedor_listas_jobs") \
+    # Buscar jobs pendientes
+    res = supabase.table("proveedor_listas_jobs") \
         .select("*") \
         .eq("estado", "pendiente") \
-        .order("numero_pagina", asc=True) \
-        .execute().data
+        .order("numero_pagina", desc=False) \
+        .execute()
+
+    jobs = res.data
 
     if not jobs:
         print("No pending jobs.")
         return
 
-    print(f"🟦 {len(jobs)} páginas pendientes detectadas")
+    print(f"🔍 {len(jobs)} jobs encontrados.")
 
     for job in jobs:
         process_job(job)
 
-    print("✔ Finalizado")
+    print("✔ OCR finalizado.")
 
 
 if __name__ == "__main__":
