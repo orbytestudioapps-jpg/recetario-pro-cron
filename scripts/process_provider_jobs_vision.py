@@ -36,31 +36,55 @@ def ocr_google(url: str) -> str:
 # 📌 Parseo simple temporal
 # ================================
 def parse_items(text):
+    """
+    PARSEO AVANZADO PARA LISTAS DE PRECIOS
+    --------------------------------------
+    - Detecta precios en cualquier lugar de la línea
+    - Soporta formatos: 2.49, 2,49, 2.49€, 2,49€, 4.50€ cartón
+    - Limpia encabezados, líneas vacías y ruido
+    """
+
+    print("\n🟦 OCR RAW TEXT:")
+    print(text[:500], "...")  # preview
+
     lines = text.split("\n")
     results = []
 
+    # Regex de precio mejorado
+    price_regex = re.compile(
+        r"(\d+[.,]\d{1,2})\s*€?|€\s*(\d+[.,]\d{1,2})"
+    )
+
     for line in lines:
-        clean = line.strip()
-        if len(clean) < 3:
+        raw = line.strip()
+
+        if len(raw) < 3:
             continue
 
-        # Precio al final, con o sin €, con coma o punto
-        match = re.search(r"(\d+[.,]\d{1,2})\s*(€)?$", clean)
+        # ignorar encabezados
+        if raw.lower() in ["huevos", "verduras", "frutas", "precios"]:
+            continue
+
+        # buscar precio en cualquier parte
+        match = price_regex.search(raw)
         if not match:
             continue
 
-        price = float(match.group(1).replace(",", "."))
-        name = clean[: match.start()].strip()
+        # extraer precio
+        precio_str = match.group(1) or match.group(2)
+        precio = float(precio_str.replace(",", "."))
 
-        # Limpieza final del nombre
-        name = re.sub(r"\s{2,}", " ", name)
+        # eliminar precio para obtener el nombre
+        nombre = raw.replace(match.group(0), "").strip(" -:·|")
 
-        if len(name) < 2:
+        if len(nombre) < 2:
             continue
 
+        print(f"🔍 Detectado item → '{nombre}' : {precio}")
+
         results.append({
-            "nombre": name,
-            "precio": price,
+            "nombre": nombre,
+            "precio": precio,
             "unidad_base": "unidad",
             "cantidad_presentacion": 1,
             "formato_presentacion": "",
@@ -68,6 +92,7 @@ def parse_items(text):
             "merma": 0,
         })
 
+    print(f"\n🟩 TOTAL ITEMS DETECTADOS: {len(results)}\n")
     return results
 
 
@@ -75,44 +100,56 @@ def parse_items(text):
 # 🔄 PROCESAR UN JOB
 # ================================
 def process_job(job):
-    print(f"🟦 Procesando página {job['numero_pagina']} — {job['archivo_url']}")
+    print(f"\n\n==============================")
+    print(f"🟦 Procesando página {job['numero_pagina']}")
+    print(f"URL: {job['archivo_url']}")
+    print("==============================\n")
 
-    # Marcar como procesando
-    supabase.table("proveedor_listas_jobs") \
-        .update({"estado": "procesando"}) \
-        .eq("id", job["id"]) \
-        .execute()
+    supabase.table("proveedor_listas_jobs").update(
+        {"estado": "procesando"}
+    ).eq("id", job["id"]).execute()
 
     try:
-        # OCR
+        # Leer OCR
         text = ocr_google(job["archivo_url"])
 
-        # Parseo
+        # Parsear items
         items = parse_items(text)
 
-        # Insertar items
-        for item in items:
+        if not items:
+            print("⚠️ NO SE DETECTARON ITEMS EN ESTA PÁGINA")
+        else:
+            print(f"✔ Se detectaron {len(items)} items, INSERTANDO...")
+
+        # Insertar cada item con logs detallados
+        for idx, item in enumerate(items):
             item["proveedor_id"] = job["proveedor_id"]
             item["organizacion_id"] = job["organizacion_id"]
             item["creado_desde_archivo"] = job["lista_id"]
             item["pagina"] = job["numero_pagina"]
 
-            supabase.table("proveedor_listas_items").insert(item).execute()
+            print(f"\n➡️ INSERT {idx+1}/{len(items)} → {item['nombre']}")
 
-        # Job procesado
-        supabase.table("proveedor_listas_jobs") \
-            .update({"estado": "procesado"}) \
-            .eq("id", job["id"]) \
-            .execute()
+            resp = supabase.table("proveedor_listas_items").insert(item).execute()
+
+            print(f"   🟩 INSERT OK: {resp.data}")
+
+        # Marcar job procesado
+        supabase.table("proveedor_listas_jobs").update(
+            {"estado": "procesado"}
+        ).eq("id", job["id"]).execute()
+
+        print("\n✅ Página procesada con éxito")
 
     except Exception as e:
-        print("❌ Error OCR:", e)
-        # Guardar error en columna existente
-        supabase.table("proveedor_listas_jobs") \
-            .update({"estado": "error"}) \
-            .eq("id", job["id"]) \
-            .execute()
+        print("❌ ERROR EN JOB:", e)
 
+        supabase.table("proveedor_listas_jobs").update(
+            {
+                "estado": "error",
+                "error": str(e)
+            }
+        ).eq("id", job["id"]).execute()
 
 # ================================
 # 📊 ACTUALIZAR PROGRESO
