@@ -1,30 +1,29 @@
 import os
 import requests
 from google.cloud import vision
-from supabase import create_client
-
+from supabase import create_client, Client
+import re
 
 # ================================
-# 🔧 Configuración Supabase
+# 🔧 Configuración
 # ================================
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ================================
-# 🔧 Cliente Google Vision OCR
-# ================================
+# Google Vision
 client_vision = vision.ImageAnnotatorClient()
 
 
 # ================================
-# 🔍 OCR con Vision API
+# 🔍 OCR con Google Vision
 # ================================
-def ocr_google(url):
+def ocr_google(url: str) -> str:
     resp = requests.get(url)
-    image = vision.Image(content=resp.content)
+    content = resp.content
 
+    image = vision.Image(content=content)
     response = client_vision.text_detection(image=image)
 
     if response.error.message:
@@ -34,13 +33,11 @@ def ocr_google(url):
 
 
 # ================================
-# 🧠 Parser simple temporal
+# 📌 Parseo simple temporal
 # ================================
 def parse_items(text):
-    import re
-
-    results = []
     lines = text.split("\n")
+    results = []
 
     for line in lines:
         line = line.strip()
@@ -64,61 +61,93 @@ def parse_items(text):
             "cantidad_presentacion": 1,
             "formato_presentacion": "",
             "iva_porcentaje": 10,
-            "merma": 0
+            "merma": 0,
         })
 
     return results
 
 
 # ================================
-# 🏗 Procesar un Job
+# 🔄 PROCESAR UN JOB
 # ================================
 def process_job(job):
     print(f"🟦 Procesando página {job['numero_pagina']} — {job['archivo_url']}")
 
     # Marcar como procesando
-    supabase.table("proveedor_listas_jobs").update({"estado": "procesando"}).eq("id", job["id"]).execute()
+    supabase.table("proveedor_listas_jobs") \
+        .update({"estado": "procesando"}) \
+        .eq("id", job["id"]) \
+        .execute()
 
     try:
         # OCR
         text = ocr_google(job["archivo_url"])
 
-        # Parser
+        # Parseo
         items = parse_items(text)
 
-        # Insertar productos
+        # Insertar items
         for item in items:
             item["proveedor_id"] = job["proveedor_id"]
             item["organizacion_id"] = job["organizacion_id"]
             item["creado_desde_archivo"] = job["lista_id"]
+            item["pagina"] = job["numero_pagina"]
 
-            res = supabase.table("proveedor_listas_items").insert(item).execute()
-            if res.error:
-                print("❌ ERROR insert:", res.error)
+            supabase.table("proveedor_listas_items").insert(item).execute()
 
-        # Marcar procesado
-        supabase.table("proveedor_listas_jobs").update({"estado": "procesado"}).eq("id", job["id"]).execute()
+        # Job procesado
+        supabase.table("proveedor_listas_jobs") \
+            .update({"estado": "procesado"}) \
+            .eq("id", job["id"]) \
+            .execute()
 
     except Exception as e:
         print("❌ Error OCR:", e)
-        supabase.table("proveedor_listas_jobs").update({
-            "estado": "error",
-            "error": str(e)
-        }).eq("id", job["id"]).execute()
+        # Guardar error en columna existente
+        supabase.table("proveedor_listas_jobs") \
+            .update({"estado": "error"}) \
+            .eq("id", job["id"]) \
+            .execute()
 
 
 # ================================
-# 🚀 Main
+# 📊 ACTUALIZAR PROGRESO
+# ================================
+def actualizar_progreso(lista_id):
+    procesados = supabase.table("proveedor_listas_jobs") \
+        .select("*", count="exact") \
+        .eq("lista_id", lista_id) \
+        .eq("estado", "procesado") \
+        .execute().count
+
+    total = supabase.table("proveedor_listas_jobs") \
+        .select("*", count="exact") \
+        .eq("lista_id", lista_id) \
+        .execute().count
+
+    estado = "procesado" if procesados == total else "procesando"
+
+    supabase.table("proveedor_listas") \
+        .update({
+            "lotes_procesados": procesados,
+            "total_lotes": total,
+            "estado": estado
+        }) \
+        .eq("id", lista_id) \
+        .execute()
+
+    print(f"📦 Progreso {procesados}/{total} — Estado: {estado}")
+
+
+# ================================
+# ▶ MAIN
 # ================================
 def main():
-    # Buscar jobs pendientes
-    res = supabase.table("proveedor_listas_jobs") \
+    jobs = supabase.table("proveedor_listas_jobs") \
         .select("*") \
         .eq("estado", "pendiente") \
         .order("numero_pagina", desc=False) \
-        .execute()
-
-    jobs = res.data
+        .execute().data
 
     if not jobs:
         print("No pending jobs.")
@@ -126,8 +155,10 @@ def main():
 
     print(f"🔍 {len(jobs)} jobs encontrados.")
 
+    # Procesar TODOS
     for job in jobs:
         process_job(job)
+        actualizar_progreso(job["lista_id"])
 
     print("✔ OCR finalizado.")
 
