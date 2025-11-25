@@ -2,7 +2,7 @@ name: Provider OCR Jobs (Google Vision)
 
 on:
   schedule:
-    - cron: "*/2 * * * *"   # cada 2 minutos
+    - cron: "*/1 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -18,20 +18,19 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Write Google credentials file
+        run: |
+          echo "$GOOGLE_APPLICATION_CREDENTIALS_JSON" > $HOME/gcloud.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$HOME/gcloud.json" >> $GITHUB_ENV
+
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
           pip install google-cloud-vision supabase requests
 
-      - name: Write Google credentials to file
-        run: |
-          echo "$GOOGLE_APPLICATION_CREDENTIALS_JSON" > gcloud.json
-          echo "GOOGLE_APPLICATION_CREDENTIALS=$(pwd)/gcloud.json" >> $GITHUB_ENV
-
-      - name: Run Google Vision OCR processor
+      - name: Run OCR Processor
         run: python scripts/process_provider_jobs_vision.py
