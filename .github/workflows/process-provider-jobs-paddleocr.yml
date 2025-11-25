@@ -1,9 +1,9 @@
-name: Provider OCR Jobs (EasyOCR)
+name: Procesar proveedor_listas_jobs (PaddleOCR Lite)
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
-  workflow_dispatch: {}
+    - cron: "*/15 * * * *"   # cada 15 minutos
+  workflow_dispatch: {}       # ejecución manual
 
 jobs:
   process_provider_jobs:
@@ -14,20 +14,22 @@ jobs:
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
     steps:
-      - name: Checkout repo
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.10
+      - name: Configurar Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      - name: Install EasyOCR + Supabase client
+      - name: Instalar dependencias OCR ligeras
         run: |
           python -m pip install --upgrade pip wheel setuptools
-          pip install easyocr pillow torchvision
-          pip install "supabase-py>=2.4.0" "requests>=2.32.0"
+          pip install paddleocr shapely pillow requests supabase pdf2image
 
-      - name: Run process-provider-jobs with EasyOCR
+          sudo apt-get update
+          sudo apt-get install -y poppler-utils  # necesario para pdf2image
+
+      - name: Ejecutar script OCR
         run: |
-          python scripts/supabase_process_provider_jobs.py
+          python scripts/process_provider_jobs_paddle.py
