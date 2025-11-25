@@ -35,81 +35,162 @@ def ocr_google(url: str) -> str:
 # ================================
 # 📌 Parseo simple temporal
 # ================================
-def parse_items(text):
+def parse_items_inteligente(text):
 
+    # Normalizamos
     lines = [l.strip() for l in text.split("\n") if l.strip()]
     items = []
 
-    # ==========================================================
-    # 🔍 1) DETECCIÓN DE TABLA HORIZONTAL
-    # ==========================================================
-    header_keywords = ["CÓDIGO", "CODIGO", "FORMATO", "PVP", "€/KG", "€/kg"]
+    precio_re = re.compile(r"(\d+[.,]\d{1,2})\s*€?")
+    formato_re = re.compile(r"\b(\d+\s?(gr|kg|KG|UND|UND\.|Uds|bandeja|manojo))\b", re.IGNORECASE)
+    lambweston_re = re.compile(r"^[A-Z]{2}\d{3,}")
 
-    if any(h.lower() in text.lower() for h in header_keywords):
-        print("🔎 Página detectada como TABLA → usando parser horizontal")
+    # ----------------------------------------------------------
+    # 💡 DETECCIÓN AUTOMÁTICA DEL TIPO DE PÁGINA
+    # ----------------------------------------------------------
 
-        fila_re = re.compile(
-            r"^(?P<codigo>[A-Za-z0-9\-]+)\s+"
-            r"(?P<nombre>.+?)\s+"
-            r"(?P<formato>\d.*?(Kg|kg|g|G|Caja|caja|x\s*\d).*?)\s+"
-            r"(?P<pvp_unidad>\d+[.,]\d{1,2})\s*€?/Kg?"
-        )
+    def es_tabla_horizontal(lines):
+        columnas = 0
+        for l in lines:
+            partes = l.split()
+            if len(partes) >= 3:
+                columnas += 1
+        return columnas > 6
 
-        for line in lines:
-            m = fila_re.search(line)
-            if m:
-                nombre = m.group("nombre").strip()
-                precio = float(m.group("pvp_unidad").replace(",", "."))
-                formato = m.group("formato")
+    def es_lambweston(lines):
+        return any(lambweston_re.match(l) for l in lines)
 
-                items.append({
-                    "nombre": nombre,
+    def es_vertical_flexible(lines):
+        precios = sum(1 for l in lines if precio_re.search(l))
+        nombres = len(lines)
+        return precios >= 1 and precios < nombres
+
+    # ----------------------------------------------------------
+    # 🔷 PARSER TIPO LAMBWESTON
+    # ----------------------------------------------------------
+    def parse_lambweston(lines):
+        productos = []
+        for i in range(len(lines)):
+            l = lines[i]
+            if lambweston_re.match(l):
+                codigo = l
+                nombre = lines[i + 1] if i + 1 < len(lines) else ""
+                formato = lines[i + 2] if i + 2 < len(lines) else ""
+
+                # Buscar precio kg y precio caja
+                precio_lineas = lines[i + 3:i + 6]
+                precio = None
+                for pl in precio_lineas:
+                    pm = precio_re.search(pl)
+                    if pm:
+                        precio = float(pm.group(1).replace(",", "."))
+                        break
+
+                if precio is None:
+                    continue
+
+                productos.append({
+                    "nombre": nombre.replace('"', "").strip(),
                     "precio": precio,
-                    "unidad_base": "kg",
+                    "unidad_base": "unidad",
                     "cantidad_presentacion": 1,
                     "formato_presentacion": formato,
                     "iva_porcentaje": 10,
                     "merma": 0,
                 })
 
-        print(f"🟩 ITEMS extraídos en modo horizontal: {len(items)}")
-        return items
+        return productos
 
-    # ==========================================================
-    # 🔍 2) PARSER VERTICAL CLÁSICO
-    # ==========================================================
-    print("🔎 Página detectada como LISTA VERTICAL → usando parser vertical")
+    # ----------------------------------------------------------
+    # 🔶 PARSER TABLA HORIZONTAL GENÉRICO
+    # ----------------------------------------------------------
+    def parse_tabla_horizontal(lines):
+        productos = []
+        for l in lines:
+            partes = [p.strip() for p in re.split(r"\s{2,}", l)]
+            if len(partes) < 2:
+                continue
 
-    precio_re = re.compile(r"(\d+[.,]\d{1,2})\s*€?")
+            nombre = partes[0]
+            precio = None
+            formato = ""
 
-    i = 0
-    while i < len(lines) - 2:
-        nombre = lines[i]
-        formato = lines[i + 1]
-        linea_precio = lines[i + 2]
+            # Buscar precio en columnas
+            for p in partes:
+                pm = precio_re.search(p)
+                if pm:
+                    precio = float(pm.group(1).replace(",", "."))
+                if formato_re.search(p):
+                    formato = p
 
-        precio_match = precio_re.search(linea_precio)
+            if precio:
+                productos.append({
+                    "nombre": nombre,
+                    "precio": precio,
+                    "unidad_base": "unidad",
+                    "cantidad_presentacion": 1,
+                    "formato_presentacion": formato,
+                    "iva_porcentaje": 10,
+                    "merma": 0,
+                })
 
-        if precio_match:
-            precio = float(precio_match.group(1).replace(",", "."))
+        return productos
 
-            items.append({
-                "nombre": nombre,
-                "precio": precio,
-                "unidad_base": "unidad",
-                "cantidad_presentacion": 1,
-                "formato_presentacion": formato,
-                "iva_porcentaje": 10,
-                "merma": 0,
-            })
+    # ----------------------------------------------------------
+    # 🔸 PARSER VERTICAL FLEXIBLE (3 líneas O disperso)
+    # ----------------------------------------------------------
+    def parse_vertical(lines):
+        productos = []
+        i = 0
 
-            i += 3
-        else:
-            i += 1
+        while i < len(lines):
+            nombre = lines[i]
+            formato = None
+            precio = None
 
-    print(f"🟩 ITEMS extraídos en modo vertical: {len(items)}")
-    return items
+            # Buscar en las 4 siguientes líneas
+            for j in range(1, 5):
+                if i + j >= len(lines):
+                    break
+                l = lines[i + j]
 
+                pm = precio_re.search(l)
+                if pm and precio is None:
+                    precio = float(pm.group(1).replace(",", "."))
+
+                if formato_re.search(l) and formato is None:
+                    formato = l
+
+                if precio and formato:
+                    break
+
+            if precio:
+                productos.append({
+                    "nombre": nombre,
+                    "precio": precio,
+                    "unidad_base": "unidad",
+                    "cantidad_presentacion": 1,
+                    "formato_presentacion": formato or "",
+                    "iva_porcentaje": 10,
+                    "merma": 0,
+                })
+
+                i += j + 1
+            else:
+                i += 1
+
+        return productos
+
+    # ----------------------------------------------------------
+    # 🧠 DECISIÓN AUTOMÁTICA
+    # ----------------------------------------------------------
+    if es_lambweston(lines):
+        return parse_lambweston(lines)
+
+    if es_tabla_horizontal(lines):
+        return parse_tabla_horizontal(lines)
+
+    return parse_vertical(lines)
 
 # ================================
 # 🔄 PROCESAR UN JOB
