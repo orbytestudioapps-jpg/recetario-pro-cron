@@ -3,6 +3,7 @@ import requests
 from google.cloud import vision
 from supabase import create_client, Client
 import re
+import difflib
 DEBUG_OCR = True   # Cambia a False en producción
 
 # ================================
@@ -126,26 +127,26 @@ def parse_lambweston_ocr(lines, precio_re):
         if not partes:
             continue
 
-        # Detectar código LWxxx
+        # Detectar código tipo LW054
         if not re.match(r"^[A-Z]{2}\d{3}$", partes[0]):
             continue
 
         codigo = partes[0]
 
-        # Nombre puede ir completo en la misma línea o en siguiente
+        # Nombre en misma línea o siguiente
         nombre = " ".join(partes[1:]).strip()
         if not nombre and i + 1 < len(lines):
             nombre = lines[i + 1].strip()
 
-        # Buscar formato tipo "4 x 2,5 Kg"
+        # Buscar formato (4 x 2.5 kg)
         formato = ""
         for j in range(i, min(i + 4, len(lines))):
-            m = re.search(r"\d+\s*x\s*\d+[.,]?\d*\s*kg", lines[j].lower())
+            m = re.search(r"\d+\s*x\s*[\d.,]+\s*kg", lines[j].lower())
             if m:
-                formato = m.group(0).replace("  ", " ")
+                formato = m.group(0)
                 break
 
-        # Buscar precio (en cualquier de las siguientes 6 líneas)
+        # Buscar precio
         precio = None
         for j in range(i, min(i + 7, len(lines))):
             m = precio_re.search(lines[j])
@@ -153,31 +154,37 @@ def parse_lambweston_ocr(lines, precio_re):
                 precio = float(m.group(1).replace(",", "."))
                 break
 
-        if precio:
-            # EXTRAER cantidad, unidad y formato real
-            cantidad, unidad, formato_final = extraer_cantidad_unidad(formato)
+        if precio is None:
+            continue
 
-            log_debug("EXTRACCIÓN", {
-                "nombre": nombre,
-                "precio": precio,
-                "formato_raw": formato,
-                "cantidad": cantidad,
-                "unidad": unidad,
-                "formato_final": formato_final,
-            })
+        # EXTRACCIÓN DE FORMATO REAL
+        cantidad, unidad, formato_final = extraer_cantidad_unidad(formato)
 
-            productos.append({
-                "nombre": nombre.replace('"', "").strip(),
-                "precio": precio,
-                "unidad_base": unidad,
-                "cantidad_presentacion": cantidad,
-                "formato_presentacion": formato_final,
-                "iva_porcentaje": 10,
-                "merma": 0,
-            })
+        # LIMPIEZA DE NOMBRE
+        nombre_limpio = nombre.replace('"', "").strip()
+        nombre_limpio = nombre_limpio.title()       # Capitalizar correctamente
+        nombre_limpio = autocorregir_nombre(nombre_limpio)
+
+        log_debug("EXTRACCIÓN", {
+            "nombre": nombre_limpio,
+            "precio": precio,
+            "formato_raw": formato,
+            "cantidad": cantidad,
+            "unidad": unidad,
+            "formato_final": formato_final,
+        })
+
+        productos.append({
+            "nombre": nombre_limpio,
+            "precio": precio,
+            "unidad_base": unidad,
+            "cantidad_presentacion": cantidad,
+            "formato_presentacion": formato_final,
+            "iva_porcentaje": 10,
+            "merma": 0,
+        })
 
     log_debug("PRODUCTOS DETECTADOS (LAMBWESTON)", productos)
-
     return productos
 
 # ====================================================================
@@ -190,12 +197,15 @@ def parse_tabla_horizontal_ocr(lines, precio_re, formato_re):
         log_debug("PROCESANDO LÍNEA", line)
 
         partes = [p.strip() for p in re.split(r"\s{2,}", line)]
-        if len(partes) < 3:
+        if len(partes) < 2:
             continue
 
-        # Normalmente:
-        # [CÓDIGO] [NOMBRE] [FORMATO] [PVP]
-        nombre = partes[1]
+        # Detectar si partes[0] es código (ej: LW054)
+        es_codigo = bool(re.match(r"^[A-Za-z]{2}\d{3,}$", partes[0]))
+
+        # Nombre según tipo de tabla
+        nombre = partes[1] if es_codigo else partes[0]
+
         formato = ""
         precio = None
 
@@ -208,11 +218,8 @@ def parse_tabla_horizontal_ocr(lines, precio_re, formato_re):
         if precio:
             cantidad, unidad, formato_final = extraer_cantidad_unidad(formato)
 
-            # Limpiar nombres incorrectos
-            if nombre.lower().endswith(("gr", "kg", "ml", "l")) and any(c.isdigit() for c in nombre):
-                continue
-
             nombre = nombre.replace(" unidad", "").replace(" Unidad", "")
+            nombre = autocorregir_nombre(nombre)
 
             log_debug("EXTRACCIÓN", {
                 "nombre": nombre,
@@ -247,6 +254,16 @@ def parse_vertical_ocr(lines, precio_re, formato_re):
         line = lines[i]
         log_debug("PROCESANDO LÍNEA", line)
 
+        # ⬆ NUEVO: ignorar líneas que son SOLO unidades
+        UNIDADES_SOLO = {
+            "kg", "kg.", "g", "gr", "ml", "l",
+            "manojo", "bandeja", "bolsa", "unidad"
+        }
+
+        if line.lower() in UNIDADES_SOLO:
+            i += 1
+            continue
+
         # Buscar precio en línea o siguientes
         pm = precio_re.search(line)
         precio = None
@@ -267,9 +284,24 @@ def parse_vertical_ocr(lines, precio_re, formato_re):
             i += 1
             continue
 
-        # Buscar formato (kg, gr, bandeja, etc.)
+        # Buscar formato (kg, gr, bandeja, etc.) en esta línea o las siguientes
         fm = formato_re.search(line)
         formato = fm.group(0) if fm else ""
+
+        # ⬆ NUEVO: Si no hay formato, mirar línea ANTERIOR (muy importante)
+        if not formato and i - 1 >= 0:
+            fm_prev = formato_re.search(lines[i - 1])
+            if fm_prev:
+                formato = fm_prev.group(0)
+
+        # ⬆ NUEVO: Si no está arriba, usar tu lógica original (próximas 2 líneas)
+        if not formato:
+            for j in range(1, 3):
+                if i + j < len(lines):
+                    fm2 = formato_re.search(lines[i + j])
+                    if fm2:
+                        formato = fm2.group(0)
+                        break
 
         # Extraer cantidad/unidad antes de limpiar nombre
         cantidad, unidad, formato_final = extraer_cantidad_unidad(formato)
@@ -287,6 +319,14 @@ def parse_vertical_ocr(lines, precio_re, formato_re):
             nombre.replace("  ", " ")
                   .strip(" -.").strip()
         )
+
+        # ⬆ NUEVO: Si el nombre quedó vacío, usar línea anterior SOLO si no es una unidad
+        if (not nombre or len(nombre) <= 2) and i - 1 >= 0:
+            prev = lines[i - 1].strip().lower()
+            if prev not in UNIDADES_SOLO and not precio_re.search(prev):
+                nombre = lines[i - 1].strip()
+
+        nombre = autocorregir_nombre(nombre)
 
         # 🔍 DEBUG de extracción
         log_debug("EXTRACCIÓN", {
@@ -387,6 +427,59 @@ def extraer_cantidad_unidad(formato_raw: str):
 
     # Nada encontrado
     return 1, "unidad", ""
+
+# Diccionario básico de productos (puedes ampliarlo)
+DICCIONARIO_PRODUCTOS = [
+    "Tomate", "Tomate pera", "Tomate cherry",
+    "Pimiento", "Pimiento verde", "Pimiento rojo", "Pimiento amarillo",
+    "Cebolla", "Cebolla morada", "Cebolleta",
+    "Patata", "Batata",
+    "Melocotón", "Melón", "Sandía",
+    "Aguacate", "Pak choi", "Apio", "Ajo", "Ajetes",
+    "Mezclum", "Rúcula", "Berros", "Lechuga",
+    "Cilantro", "Perejil", "Eneldo", "Tomillo", "Romero", "Orégano",
+    "Albahaca", "Hierbabuena", "Menta",
+    "Champiñón", "Setas", "Portobello",
+    "Zanahoria", "Pepino", "Calabacín", "Berenjena",
+    "Nueces", "Almendras", "Sésamo", "Curry", "Pimentón", "Granadas", "Tagete"
+]
+
+def autocorregir_nombre(nombre: str) -> str:
+    n = nombre.strip()
+    n = n.title()  # Normalizar capitalización
+
+    # Correcciones OCR comunes
+    reemplazos = {
+        "meocotón": "Melocotón",
+        "meon": "Melón",
+        "meón": "Melón",
+        "ciantro": "Cilantro",
+        "ciant": "Cilantro",
+        "ceboeta": "Cebolleta",
+        "uvas aedo": "Uvas",
+        "pátano": "Plátano",
+        "ranadas": "Granadas",
+        "for": "Flor",
+        "fora": "Flor",
+        "omabarda": "Lombarda",
+        "ombarda": "Lombarda",
+        "pensamimento": "Pensamiento",
+        "pensaminto": "Pensamiento",
+        "uarnición": "Guarnición",
+    }
+
+    for k, v in reemplazos.items():
+        if k in n.lower():
+            return v
+
+    # Fuzzy matching extendido
+    dicc_ext = DICCIONARIO_PRODUCTOS + [p.lower() for p in DICCIONARIO_PRODUCTOS]
+
+    mejor = difflib.get_close_matches(n.lower(), dicc_ext, n=1, cutoff=0.68)
+    if mejor:
+        return mejor[0].title()
+
+    return n
 
 # ====================================================================
 # 🔄 PROCESAR UN JOB INDIVIDUAL
