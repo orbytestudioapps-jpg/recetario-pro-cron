@@ -627,41 +627,136 @@ def process_job(job):
             }
         ).eq("id", job["id"]).execute()
 
-
 # ================================
 # 📊 ACTUALIZAR PROGRESO
 # ================================
 def actualizar_progreso(lista_id):
-    procesados = supabase.table("proveedor_listas# ================================
- def parse_items_inteligente(text):
-    # Normalizamos
+    """
+    Actualiza el campo 'progreso' en proveedor_listas
+    contando los items que ya tienen nombre + precio.
+    """
+    # Obtener todos los items procesados
+    data = (
+        supabase
+        .table("proveedor_listas_items")
+        .select("id")
+        .eq("lista_id", lista_id)
+        .not_.is_("nombre", None)
+        .execute()
+    )
+
+    procesados = len(data.data) if data.data else 0
+
+    # Actualizar progreso en proveedor_listas
+    supabase.table("proveedor_listas").update({
+        "progreso": procesados
+    }).eq("id", lista_id).execute()
+
+    print(f"🔄 Progreso actualizado: {procesados}")
+
+def parse_items_inteligente(text: str):
+    """
+    Analiza texto OCR de listas de proveedores y extrae:
+    - nombre del producto
+    - formato / unidad (kg, bandeja, bolsa...)
+    - precio (€)
+    Compatible con listas como las de Frutas Javier Cuevas.
+    """
+
+    # Normalización general del texto OCR
+    text = (
+        text.replace("\t", " ")
+            .replace("€", "")
+            .replace("..", ".")
+            .replace(" ,", ",")
+            .replace("  ", " ")
+            .strip()
+    )
+
+    # Dividir líneas no vacías
     lines = [l.strip() for l in text.split("\n") if l.strip()]
 
-    # Regex compartidos
-    precio_re = re.compile(r"(\d+[.,]\d{1,2})\s*€?")
-    formato_re = re.compile(
-        r"\b((\d+\s*)?(gr|kg|KG|und|UND|uds|Uds|bandeja|Bandeja|manojo|Manojo|cartón|Cartón|docena))\b",
-        re.IGNORECASE,
+    # Regex compatibles con OCR
+    precio_re = re.compile(
+        r"(?<!\d)(\d+[.,]\d{1,2})(?:\s*(€|eur|euro))?",
+        re.IGNORECASE
     )
-    lambweston_re = re.compile(r"^[A-Z]{2}\d{3,}")
 
-    # Palabras que nunca deben ser nombre de producto
-    blacklist_nombres = {
-        "FORMATO",
-        "PRECIO",
-        "PVP",
-        "CÓDIGO",
-        "CODIGO",
-        "FRUTAS JAVIER CUEVAS S.L",
+    formato_re = re.compile(
+        r"(\d+\s*(kg|g|gr|l|ml)|"
+        r"\bkg\b|\bg\b|\bgr\b|\bl\b|\bml\b|"
+        r"\b(bandeja|bolsa|manojo|unidad|docena)\b|"
+        r"\d+\s*(bandeja|bolsa|manojo|unidad))",
+        re.IGNORECASE
+    )
+
+    # Filtrar líneas basura del OCR
+    blacklist = {
+        "FORMATO", "PRECIO", "PVP", "CODIGO",
+        "FRUTAS JAVIER CUEVAS", "TELÉFONO", "EMAIL",
+        "SEMANA", "LISTADO", "COTIZACION"
     }
 
-    def solo_precio(s: str) -> bool:
-        # true si la línea es básicamente un precio tipo "1.09€"
-        return bool(precio_re.fullmatch(s.replace(" ", "")))
+    def linea_basura(s):
+        s_up = s.upper()
+        return any(b in s_up for b in blacklist)
 
-    def es_unidad_suelta(s: str) -> bool:
-        s2 = s.strip().lower()
-        return s2 in {"kg", "kg.", "und", "uds", "unidad", "bandeja", "manojo"}
+    def solo_precio(s):
+        s2 = s.replace(" ", "")
+        return bool(precio_re.fullmatch(s2))
+
+    items = []
+
+    for line in lines:
+        original = line
+
+        if linea_basura(line):
+            continue
+        if solo_precio(line):
+            continue
+        if len(line) < 4:
+            continue
+
+        # Buscar precio (usualmente al final)
+        precio_match = precio_re.search(line)
+        if not precio_match:
+            continue  # Línea inválida, no contiene precio
+
+        precio_str = precio_match.group(1).replace(",", ".")
+        try:
+            precio = float(precio_str)
+        except:
+            continue
+
+        # Quitar precio de la línea para identificar producto
+        line_sin_precio = line[:precio_match.start()].strip()
+
+        # Buscar formato o unidad
+        formato_match = formato_re.search(line_sin_precio)
+        formato = formato_match.group(0).strip() if formato_match else ""
+
+        # Extraer nombre
+        if formato:
+            nombre = line_sin_precio.replace(formato, "").strip()
+        else:
+            nombre = line_sin_precio.strip()
+
+        # Limpiar nombre
+        nombre = re.sub(r"\s{2,}", " ", nombre)
+        nombre = nombre.strip(" -.")
+
+        if not nombre:
+            continue
+
+        # Registrar item final
+        items.append({
+            "nombre": nombre,
+            "formato": formato,
+            "precio": precio,
+            "raw": original
+        })
+
+    return items
 
     # ----------------------------------------------------------
     # 💡 DETECCIÓN AUTOMÁTICA DEL TIPO DE PÁGINA
