@@ -71,7 +71,13 @@ def parse_items_inteligente(text: str):
 
 
     # Regex
-    precio_re = re.compile(r"(\d+[.,]\d{1,2})")
+    precio_re = re.compile(
+        r"(?<!\d)"                  # Evita parte de números largos
+        r"(\d{1,3}(?:[.,]\d{3})*"   # Miles: 1.000 / 1,000 / 12.000.000
+        r"(?:[.,]\d{1,2})?"         # Decimales opcionales
+        r")"
+    )
+
     formato_re = re.compile(
         r"(?:\d+\s*(kg|g|gr|l|ml))|"
         r"(kg|g|gr|l|ml)|"
@@ -79,7 +85,8 @@ def parse_items_inteligente(text: str):
         r"(\d+\s*(bandeja|bolsa|manojo|unidad))",
         re.IGNORECASE
     )
-    codigo_re = re.compile(r"^[A-Z]{2}\d{3}$")  # LW054
+
+    codigo_re = re.compile(r"^[A-Z]{2}\d{3}$")
 
     blacklist = {
         "FORMATO", "PRECIO", "PVP", "CÓDIGO", "CODIGO",
