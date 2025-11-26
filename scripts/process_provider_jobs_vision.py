@@ -72,10 +72,10 @@ def parse_items_inteligente(text: str):
 
     # Regex
     precio_re = re.compile(
-        r"(?<!\d)"                  # Evita parte de números largos
-        r"(\d{1,3}(?:[.,]\d{3})*"   # Miles: 1.000 / 1,000 / 12.000.000
-        r"(?:[.,]\d{1,2})?"         # Decimales opcionales
-        r")"
+        r"(?<!\d)"                 # No debe ser parte de un número grande
+        r"(\d{1,4}"                # 1 – 4 dígitos
+        r"(?:[.,]\d{1,3})?"        # Separador: miles o decimales
+        r"(?:[.,]\d{1,2})?)"       # Decimales finales
     )
 
     formato_re = re.compile(
@@ -416,10 +416,12 @@ def extraer_cantidad_unidad(formato_raw: str):
     if f in FORMATOS_SIN_NUMERO:
         return 1, f, f
 
-    # Caso 4: unidad métrica suelta sin número (kg, g, gr, ml, l)
-    UNIDADES_METRICAS = {"kg", "g", "gr", "ml", "l"}
+    # Caso 4: unidades métricas SUELTAS — PROHIBIDAS
+    # "kg", "g", "gr", "l", "ml" → estas NO deben producir unidad_base
+    UNIDADES_METRICAS = {"kg", "g", "gr", "l", "ml"}
     if f in UNIDADES_METRICAS:
-        return 1, f, ""
+        # NO aceptar estas como unidad_base porque vienen de OCR roto
+        return 1, "unidad", ""
 
     # Caso 5: mezcla tipo "bandeja 125gr"
     m = re.search(r"([\d.,]+)\s*(kg|g|gr|l|ml)", f)
@@ -433,18 +435,40 @@ def extraer_cantidad_unidad(formato_raw: str):
 
 # Diccionario básico de productos (puedes ampliarlo)
 DICCIONARIO_PRODUCTOS = [
-    "Tomate", "Tomate pera", "Tomate cherry",
-    "Pimiento", "Pimiento verde", "Pimiento rojo", "Pimiento amarillo",
-    "Cebolla", "Cebolla morada", "Cebolleta",
-    "Patata", "Batata",
-    "Melocotón", "Melón", "Sandía",
-    "Aguacate", "Pak choi", "Apio", "Ajo", "Ajetes",
-    "Mezclum", "Rúcula", "Berros", "Lechuga",
+    # Verduras y hortalizas
+    "Tomate", "Tomate Pera", "Tomate Cherry", "Tomate Rama", "Tomate Ensalada",
+    "Cebolla", "Cebolla Morada", "Cebolleta", "Chalota", "Puerro",
+    "Apio", "Ajo", "Ajetes", "Berenjena", "Pepino", "Zanahoria",
+    "Calabacín", "Calabaza", "Calabaza Violina", "Brócoli", "Col",
+    "Col Kale", "Coliflor", "Borraja", "Pak Choi", "Daikon",
+
+    # Frutas
+    "Manzana", "Manzana Fuji", "Manzana Golden", "Manzana Reineta",
+    "Mandarina", "Naranja", "Naranja Zumo", "Pera", "Melón", "Sandía",
+    "Aguacate", "Limón", "Lima", "Granadas", "Uvas", "Kiwi",
+
+    # Hierbas y hojas
     "Cilantro", "Perejil", "Eneldo", "Tomillo", "Romero", "Orégano",
-    "Albahaca", "Hierbabuena", "Menta",
-    "Champiñón", "Setas", "Portobello",
-    "Zanahoria", "Pepino", "Calabacín", "Berenjena",
-    "Nueces", "Almendras", "Sésamo", "Curry", "Pimentón", "Granadas", "Tagete"
+    "Albahaca", "Menta", "Hierbabuena", "Rúcula", "Berros", "Mezclum",
+    "Micro Mezclum", "Tagete", "Pensamiento",
+
+    # Setas
+    "Champiñón", "Portobello", "Setas", "Shiitake",
+
+    # Frutos secos y semillas
+    "Almendras", "Nueces", "Anacardos", "Pistachos", "Avellanas",
+    "Pasas", "Sésamo", "Pipas Calabaza", "Pipas Girasol",
+
+    # Especias
+    "Pimentón", "Curry", "Comino", "Cúrcuma", "Pimienta",
+    "Ají", "Mostaza", "Orégano Hoja",
+
+    # Otros básicos
+    "Aceite", "Aceite Girasol", "Aceite Oliva", "Vinagre", "Harina",
+    "Cartón", "Huevos", "Azafrán",
+
+    # Formatos habituales (para ayudar autocorrección)
+    "Bandeja", "Bolsa", "Manojo", "Docena",
 ]
 
 def autocorregir_nombre(nombre: str) -> str:
@@ -469,6 +493,20 @@ def autocorregir_nombre(nombre: str) -> str:
         "pensamimento": "Pensamiento",
         "pensaminto": "Pensamiento",
         "uarnición": "Guarnición",
+        "abahaca": "Albahaca",
+        "acachofas": "Alcachofas",
+        "peados": "Pelados",
+        "co kae": "Col Kale",
+        "pimenton duce": "Pimentón Dulce",
+        "pipas caabaza peadas": "Pipas Calabaza Peladas",
+        "noeces": "Nueces",
+        "amas": "Amas",  # ajustar según casos reales
+        "mezcum": "Mezclum",
+        "micromezcum": "Micromezclum",
+        "meocoton": "Melocotón",
+        "granio": "Granillo",
+        "fambuesa": "Frambuesa",
+        "physais": "Physalis",
     }
 
     for k, v in reemplazos.items():
