@@ -390,42 +390,38 @@ def normalizar_formato(formato_raw: str):
     return ""
 
 def extraer_cantidad_unidad(formato_raw: str):
-    """
-    Extrae cantidad numérica y unidad real desde cadenas tipo:
-    - '125gr'
-    - '400 gr'
-    - '2 kg'
-    - '4 x 2.5 kg'
-    - 'bandeja 125gr'
-    """
-
     if not formato_raw:
-        return 1, "unidad", ""  # por defecto
+        return 1, "unidad", ""
 
     f = formato_raw.lower().strip()
 
     # Caso 1: formato tipo "4 x 2.5 kg"
     m = re.match(r"(\d+)\s*x\s*([\d.,]+)\s*(kg|g|gr|l|ml)", f)
     if m:
-        multiplicador = int(m.group(1))
         cantidad = float(m.group(2).replace(",", "."))
         unidad = m.group(3)
-        return cantidad, unidad, f  # formato completo
+        return cantidad, unidad, f
 
-    # Caso 2: "125gr", "500gr", "200 g"
+    # Caso 2: número + unidad ("125gr", "500 gr", "200 g")
     m = re.match(r"([\d.,]+)\s*(kg|g|gr|l|ml)$", f)
     if m:
         cantidad = float(m.group(1).replace(",", "."))
         unidad = m.group(2)
-        return cantidad, unidad, ""  # sin formato extra
+        return cantidad, unidad, ""
 
-    # Caso 3: formato suelto sin cantidad
-    unidades_validas = {"kg", "g", "gr", "l", "ml", "unidad"}
-    for u in unidades_validas:
-        if f == u:
-            return 1, u, ""
+    # Caso 3: formato suelto SIN número — bandeja, bolsa, manojo, unidad, docena...
+    FORMATOS_SIN_NUMERO = {
+        "bandeja", "bolsa", "manojo", "unidad", "docena"
+    }
+    if f in FORMATOS_SIN_NUMERO:
+        return 1, f, f
 
-    # Caso 4: mezcla tipo "bandeja 125gr"
+    # Caso 4: unidad métrica suelta sin número (kg, g, gr, ml, l)
+    UNIDADES_METRICAS = {"kg", "g", "gr", "ml", "l"}
+    if f in UNIDADES_METRICAS:
+        return 1, f, ""
+
+    # Caso 5: mezcla tipo "bandeja 125gr"
     m = re.search(r"([\d.,]+)\s*(kg|g|gr|l|ml)", f)
     if m:
         cantidad = float(m.group(1).replace(",", "."))
