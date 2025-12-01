@@ -4,33 +4,35 @@ from google.cloud import vision
 from supabase import create_client, Client
 import re
 import difflib
-DEBUG_OCR = True   # Cambia a False en producción
 
-# ================================
+DEBUG_OCR = True   # Cambiar a False en prod
+
+# ======================================================
 # 🔧 CONFIGURACIÓN
-# ================================
+# ======================================================
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Google Vision Client
 client_vision = vision.ImageAnnotatorClient()
 
-# ================================
+# ======================================================
 # 🔍 OCR GOOGLE VISION
-# ================================
+# ======================================================
 def ocr_google(url: str) -> str:
     resp = requests.get(url)
     content = resp.content
-
     image = vision.Image(content=content)
     response = client_vision.text_detection(image=image)
-
     if response.error.message:
         raise Exception(response.error.message)
 
     return response.text_annotations[0].description if response.text_annotations else ""
 
+
+# ======================================================
+# 🔍 DEBUG
+# ======================================================
 def log_debug(section: str, data=None):
     if not DEBUG_OCR:
         return
@@ -45,56 +47,52 @@ def log_debug(section: str, data=None):
     else:
         print(data)
 
-# ====================================================================
-# 🧠 PARSER INTELIGENTE – AUTODETECCIÓN TIPOS DE LISTA
-# ====================================================================
-def parse_items_inteligente(text: str):
-    """
-    Parser OCR universal:
-    - LambWeston (tablas americanas)
-    - Tablas horizontales (CÓDIGO | NOMBRE | FORMATO | PVP)
-    - Listas verticales (Javier Cuevas)
-    """
 
-    # Normalización OCR
+# ======================================================
+# 🚀 PARSER UNIVERSAL DE TEXTOS OCR
+# ======================================================
+
+def parse_items_inteligente(text: str):
     text = (
         text.replace("\t", " ")
             .replace("€", "")
-            .replace("Kg.", "Kg")
-            .replace("kg.", "kg")
             .replace("  ", " ")
             .strip()
     )
+
     lines = [l.strip() for l in text.split("\n") if l.strip()]
 
-    log_debug("LÍNEAS TRAS NORMALIZACIÓN", lines[:50])  # primeras 50
+    log_debug("LÍNEAS TRAS NORMALIZACIÓN", lines[:50])
 
-
-    # Regex
+    # -------------------------------
+    # PATTERNS CORREGIDOS (NO ROMPEN PALABRAS)
+    # -------------------------------
     precio_re = re.compile(
-        r"(?<!\d)"                 # No debe ser parte de un número grande
-        r"(\d{1,4}"                # 1 – 4 dígitos
-        r"(?:[.,]\d{1,3})?"        # Separador: miles o decimales
-        r"(?:[.,]\d{1,2})?)"       # Decimales finales
+        r"\b(\d{1,4}(?:[.,]\d{1,3})?(?:[.,]\d{1,2})?)\b"   # 7,500 → 7.50
     )
 
     formato_re = re.compile(
-        r"(?:\d+\s*(kg|g|gr|l|ml))|"
-        r"(kg|g|gr|l|ml)|"
-        r"(bandeja|bolsa|manojo|unidad|docena)|"
-        r"(\d+\s*(bandeja|bolsa|manojo|unidad))",
+        r"\b\d+[.,]?\d*\s*(kg|g|gr|l|ml)\b|"               # 125gr, 5 kg
+        r"\b(kg|g|gr|l|ml)\b|"                             # unidades sueltas
+        r"\b(bandeja|bolsa|manojo|unidad|docena)\b",
         re.IGNORECASE
     )
 
-    codigo_re = re.compile(r"^[A-Z]{2}\d{3}$")
+    codigo_re = re.compile(r"^[A-Za-z]{1,3}\d{2,6}$")
 
+    # -----------------------------
+    # LIMPIAR LÍNEAS BASURA
+    # -----------------------------
     blacklist = {
-        "FORMATO", "PRECIO", "PVP", "CÓDIGO", "CODIGO",
-        "FRUTAS JAVIER CUEVAS", "SEMANA", "LISTADO", "EMAIL", "TELÉFONO"
+        "FORMATO", "PRECIO", "PVP",
+        "CÓDIGO", "CODIGO",
+        "CLIENTE", "FACTURA", "N.I.F",
+        "TELÉFONO", "FECHA", "ALBARÁN",
+        "Lote", "Cad.", "CAD."
     }
 
     def linea_valida(s):
-        if len(s) < 3:
+        if len(s) < 2:
             return False
         if any(b in s.upper() for b in blacklist):
             return False
@@ -102,176 +100,195 @@ def parse_items_inteligente(text: str):
 
     lines = [l for l in lines if linea_valida(l)]
 
-    # =====================================================
-    # 🔷 DETECTAR LAMBWESTON (CÓDIGOS LWxxx)
-    # =====================================================
-    if any(codigo_re.match(l.split()[0]) for l in lines if len(l.split()) > 0):
-        return parse_lambweston_ocr(lines, precio_re)
+    # -----------------------------
+    # DETECCIÓN DE TIPO DE DOCUMENTO
+    # -----------------------------
 
-    # =====================================================
-    # 🔶 DETECTAR TABLA HORIZONTAL (CÓDIGO / PVP)
-    # =====================================================
-    head = " ".join(lines[:15]).upper()
-    if "CODIGO" in head and "PVP" in head:
-        return parse_tabla_horizontal_ocr(lines, precio_re, formato_re)
+    # ✔️ 1) FACTURA (Código – Descripción – Kilos – Precio – Importe)
+    if detectar_factura(lines):
+        return parse_factura(lines, precio_re)
 
-    # =====================================================
-    # 🔸 LISTA VERTICAL (Javier Cuevas)
-    # =====================================================
-    return parse_vertical_ocr(lines, precio_re, formato_re)
+    # ✔️ 2) LAMBWESTON
+    if any(re.match(r"^[A-Z]{2}\d{3,}", l.split()[0]) for l in lines if len(l.split()) > 0):
+        return parse_lambweston(lines, precio_re)
 
-# ====================================================================
-# 🔷 PARSER – LAMBWESTON
-# ====================================================================
-def parse_lambweston_ocr(lines, precio_re):
+    # ✔️ 3) TABLA HORIZONTAL CON CÓDIGO
+    if any("PVP" in l.upper() or "FORMATO" in l.upper() for l in lines[:10]):
+        return parse_tabla_horizontal(lines, precio_re, formato_re)
+
+    # ✔️ 4) LISTA VERTICAL (Javier Cuevas)
+    return parse_vertical(lines, precio_re, formato_re)
+
+
+
+# ======================================================
+# 🧾 DETECTAR FACTURA
+# ======================================================
+def detectar_factura(lines):
+    """
+    Detecta estructuras tipo FACTURA:
+    CÓDIGO | DESCRIPCIÓN | KILOS | PRECIO | IMPORTE
+    """
+    hits = 0
+    for l in lines:
+        partes = l.split()
+        # Detectar fila con: código + kilos + precio + importe
+        if len(partes) >= 5:
+            if re.match(r"^\d{2,5}$", partes[0]):  # 226 / 4045 / etc
+                if re.search(r"\d+[.,]\d{1,3}", l):  # kilos
+                    if re.search(r"\d+[.,]\d{1,2}", l):  # precios
+                        hits += 1
+
+    return hits >= 2  # mínimo dos líneas válidas
+
+
+
+# ======================================================
+# 🧾 PARSER DE FACTURAS
+# ======================================================
+def parse_factura(lines, precio_re):
     productos = []
 
-    for i in range(len(lines)):
-        line = lines[i]
-        log_debug("PROCESANDO LÍNEA", line)
-
-        partes = line.split()
-        if not partes:
+    for l in lines:
+        partes = l.split()
+        if len(partes) < 5:
             continue
 
-        # Detectar código tipo LW054
-        if not re.match(r"^[A-Z]{2}\d{3}$", partes[0]):
+        # código
+        if not re.match(r"^\d{2,5}$", partes[0]):
             continue
 
         codigo = partes[0]
 
-        # Nombre en misma línea o siguiente
-        nombre = " ".join(partes[1:]).strip()
+        # extract números
+        numeros = precio_re.findall(l)
+        if len(numeros) < 2:
+            continue
+
+        kilos = float(numeros[0].replace(",", "."))
+        precio = float(numeros[1].replace(",", "."))
+
+        # descripción está entre el código y los números
+        desc = l.replace(codigo, "")
+        desc = desc.replace(str(numeros[0]), "")
+        desc = desc.replace(str(numeros[1]), "")
+        desc = desc.strip(" -.")
+
+        desc = autocorregir_nombre(desc)
+
+        productos.append({
+            "nombre": desc,
+            "precio": precio,
+            "unidad_base": "kg",
+            "cantidad_presentacion": kilos,
+            "formato_presentacion": f"{kilos}kg",
+            "iva_porcentaje": 10,
+            "merma": 0,
+        })
+
+    log_debug("PRODUCTOS FACTURA", productos)
+    return productos
+
+
+
+# ======================================================
+# LAMBWESTON
+# ======================================================
+def parse_lambweston(lines, precio_re):
+    productos = []
+    for i in range(len(lines)):
+        l = lines[i]
+        partes = l.split()
+        if not partes:
+            continue
+
+        if not re.match(r"^[A-Z]{2}\d{3,}", partes[0]):
+            continue
+
+        codigo = partes[0]
+        nombre = " ".join(partes[1:]) if len(partes) > 1 else ""
         if not nombre and i + 1 < len(lines):
-            nombre = lines[i + 1].strip()
+            nombre = lines[i+1]
 
-        # Buscar formato (4 x 2.5 kg)
-        formato = ""
-        for j in range(i, min(i + 4, len(lines))):
-            m = re.search(r"\d+\s*x\s*[\d.,]+\s*kg", lines[j].lower())
-            if m:
-                formato = m.group(0)
-                break
-
-        # Buscar precio
         precio = None
-        for j in range(i, min(i + 7, len(lines))):
-            m = precio_re.search(lines[j])
-            if m:
-                precio = float(m.group(1).replace(",", "."))
+        for j in range(i, min(i+5, len(lines))):
+            pm = precio_re.search(lines[j])
+            if pm:
+                precio = float(pm.group(1).replace(",", "."))
                 break
 
         if precio is None:
             continue
 
-        # EXTRACCIÓN DE FORMATO REAL
-        cantidad, unidad, formato_final = extraer_cantidad_unidad(formato)
-
-        # LIMPIEZA DE NOMBRE
-        nombre_limpio = nombre.replace('"', "").strip()
-        nombre_limpio = nombre_limpio.title()       # Capitalizar correctamente
-        nombre_limpio = autocorregir_nombre(nombre_limpio)
-
-        log_debug("EXTRACCIÓN", {
-            "nombre": nombre_limpio,
-            "precio": precio,
-            "formato_raw": formato,
-            "cantidad": cantidad,
-            "unidad": unidad,
-            "formato_final": formato_final,
-        })
+        nombre = autocorregir_nombre(nombre)
 
         productos.append({
-            "nombre": nombre_limpio,
+            "nombre": nombre,
             "precio": precio,
-            "unidad_base": unidad,
-            "cantidad_presentacion": cantidad,
-            "formato_presentacion": formato_final,
+            "unidad_base": "unidad",
+            "cantidad_presentacion": 1,
+            "formato_presentacion": "",
             "iva_porcentaje": 10,
             "merma": 0,
         })
 
-    log_debug("PRODUCTOS DETECTADOS (LAMBWESTON)", productos)
+    log_debug("PRODUCTOS LAMBWESTON", productos)
     return productos
 
-# ====================================================================
-# 🔶 PARSER – TABLA HORIZONTAL (CÓDIGO | PRODUCTO | FORMATO | PVP)
-# ====================================================================
-def parse_tabla_horizontal_ocr(lines, precio_re, formato_re):
+
+
+# ======================================================
+# TABLA HORIZONTAL
+# ======================================================
+def parse_tabla_horizontal(lines, precio_re, formato_re):
     productos = []
 
-    for line in lines:
-        log_debug("PROCESANDO LÍNEA", line)
-
-        partes = [p.strip() for p in re.split(r"\s{2,}", line)]
+    for l in lines:
+        partes = [p.strip() for p in re.split(r"\s{2,}", l)]
         if len(partes) < 2:
             continue
 
-        # Detectar si partes[0] es código (ej: LW054)
-        es_codigo = bool(re.match(r"^[A-Za-z]{2}\d{3,}$", partes[0]))
-
-        # Nombre según tipo de tabla
-        nombre = partes[1] if es_codigo else partes[0]
-
-        formato = ""
         precio = None
+        formato = ""
 
         for p in partes:
-            if formato_re.search(p):
-                formato = formato_re.search(p).group(0)
             if precio_re.search(p):
                 precio = float(precio_re.search(p).group(1).replace(",", "."))
+            if formato_re.search(p):
+                formato = formato_re.search(p).group(0)
 
-        if precio:
-            cantidad, unidad, formato_final = extraer_cantidad_unidad(formato)
+        if precio is None:
+            continue
 
-            nombre = nombre.replace(" unidad", "").replace(" Unidad", "")
-            nombre = autocorregir_nombre(nombre)
+        nombre = partes[0]
+        nombre = autocorregir_nombre(nombre)
 
-            log_debug("EXTRACCIÓN", {
-                "nombre": nombre,
-                "precio": precio,
-                "formato_raw": formato,
-                "cantidad": cantidad,
-                "unidad": unidad,
-                "formato_final": formato_final,
-            })
+        productos.append({
+            "nombre": nombre,
+            "precio": precio,
+            "unidad_base": "unidad",
+            "cantidad_presentacion": 1,
+            "formato_presentacion": formato,
+            "iva_porcentaje": 10,
+            "merma": 0,
+        })
 
-            productos.append({
-                "nombre": nombre,
-                "precio": precio,
-                "unidad_base": unidad,
-                "cantidad_presentacion": cantidad,
-                "formato_presentacion": formato_final,
-                "iva_porcentaje": 10,
-                "merma": 0,
-            })
-
-    log_debug("PRODUCTOS DETECTADOS (TABLA HORIZONTAL)", productos)
+    log_debug("PRODUCTOS TABLA", productos)
     return productos
 
-# ====================================================================
-# 🔸 PARSER – LISTA VERTICAL (Javier Cuevas)
-# ====================================================================
-def parse_vertical_ocr(lines, precio_re, formato_re):
+
+
+# ======================================================
+# LISTA VERTICAL (Cuevas)
+# ======================================================
+def parse_vertical(lines, precio_re, formato_re):
     productos = []
     i = 0
 
     while i < len(lines):
         line = lines[i]
-        log_debug("PROCESANDO LÍNEA", line)
 
-        # ⬆ NUEVO: ignorar líneas que son SOLO unidades
-        UNIDADES_SOLO = {
-            "kg", "kg.", "g", "gr", "ml", "l",
-            "manojo", "bandeja", "bolsa", "unidad"
-        }
-
-        if line.lower() in UNIDADES_SOLO:
-            i += 1
-            continue
-
-        # Buscar precio en línea o siguientes
+        # precios cerca
         pm = precio_re.search(line)
         precio = None
         skip = 0
@@ -280,8 +297,8 @@ def parse_vertical_ocr(lines, precio_re, formato_re):
             precio = float(pm.group(1).replace(",", "."))
         else:
             for j in range(1, 3):
-                if i + j < len(lines):
-                    pm2 = precio_re.search(lines[i + j])
+                if i+j < len(lines):
+                    pm2 = precio_re.search(lines[i+j])
                     if pm2:
                         precio = float(pm2.group(1).replace(",", "."))
                         skip = j
@@ -291,316 +308,133 @@ def parse_vertical_ocr(lines, precio_re, formato_re):
             i += 1
             continue
 
-        # Buscar formato (kg, gr, bandeja, etc.) en esta línea o las siguientes
+        # formato
         fm = formato_re.search(line)
         formato = fm.group(0) if fm else ""
 
-        # ⬆ NUEVO: Si no hay formato, mirar línea ANTERIOR (muy importante)
-        if not formato and i - 1 >= 0:
-            fm_prev = formato_re.search(lines[i - 1])
-            if fm_prev:
-                formato = fm_prev.group(0)
-
-        # ⬆ NUEVO: Si no está arriba, usar tu lógica original (próximas 2 líneas)
-        if not formato:
-            for j in range(1, 3):
-                if i + j < len(lines):
-                    fm2 = formato_re.search(lines[i + j])
-                    if fm2:
-                        formato = fm2.group(0)
-                        break
-
-        # Extraer cantidad/unidad antes de limpiar nombre
-        cantidad, unidad, formato_final = extraer_cantidad_unidad(formato)
-
-        # Nombre limpio:
+        # nombre
         nombre = line
-
+        if pm:
+            nombre = nombre.replace(pm.group(1), "")
         if formato:
             nombre = nombre.replace(formato, "")
 
-        if pm:
-            nombre = nombre.replace(pm.group(1), "")
-
-        nombre = (
-            nombre.replace("  ", " ")
-                  .strip(" -.").strip()
-        )
-
-        # ⬆ NUEVO: Si el nombre quedó vacío, usar línea anterior SOLO si no es una unidad
-        if (not nombre or len(nombre) <= 2) and i - 1 >= 0:
-            prev = lines[i - 1].strip().lower()
-            if prev not in UNIDADES_SOLO and not precio_re.search(prev):
-                nombre = lines[i - 1].strip()
-
+        nombre = nombre.strip(" -.").strip()
         nombre = autocorregir_nombre(nombre)
 
-        # 🔍 DEBUG de extracción
-        log_debug("EXTRACCIÓN", {
-            "nombre": nombre,
-            "precio": precio,
-            "formato_raw": formato,
-            "cantidad": cantidad,
-            "unidad": unidad,
-            "formato_final": formato_final,
-        })
-
-        # Validación nombre
         if nombre and len(nombre) > 2:
             productos.append({
                 "nombre": nombre,
                 "precio": precio,
-                "unidad_base": unidad,
-                "cantidad_presentacion": cantidad,
-                "formato_presentacion": formato_final,
+                "unidad_base": "unidad",
+                "cantidad_presentacion": 1,
+                "formato_presentacion": formato,
                 "iva_porcentaje": 10,
                 "merma": 0,
             })
 
         i += skip + 1
 
-    log_debug("PRODUCTOS DETECTADOS (VERTICAL)", productos)
+    log_debug("PRODUCTOS VERTICAL", productos)
     return productos
-    
-def normalizar_formato(formato_raw: str):
-    if not formato_raw:
-        return ""
 
-    f = formato_raw.strip().lower()
 
-    # Eliminar caracteres sueltos que OCR confunde como unidad
-    if f in {"l", "g"}:
-        return ""
 
-    # Detectar número + unidad
-    m = re.match(r"(\d+)\s*(kg|g|gr|l|ml)$", f)
-    if m:
-        return m.group(2)  # devolver unidad normalizada
+# ======================================================
+# AUTOCORRECCIÓN SUAVE (sin eliminar letras)
+# ======================================================
 
-    # Detectar unidades sueltas válidas
-    unidades_validas = {
-        "kg", "g", "gr", "ml", "l",
-        "manojo", "bandeja", "bolsa", "unidad", "docena"
-    }
-
-    for u in unidades_validas:
-        if u in f:
-            return u
-
-    return ""
-
-def extraer_cantidad_unidad(formato_raw: str):
-    if not formato_raw:
-        return 1, "unidad", ""
-
-    f = formato_raw.lower().strip()
-
-    # Caso 1: formato tipo "4 x 2.5 kg"
-    m = re.match(r"(\d+)\s*x\s*([\d.,]+)\s*(kg|g|gr|l|ml)", f)
-    if m:
-        cantidad = float(m.group(2).replace(",", "."))
-        unidad = m.group(3)
-        return cantidad, unidad, f
-
-    # Caso 2: número + unidad ("125gr", "500 gr", "200 g")
-    m = re.match(r"([\d.,]+)\s*(kg|g|gr|l|ml)$", f)
-    if m:
-        cantidad = float(m.group(1).replace(",", "."))
-        unidad = m.group(2)
-        return cantidad, unidad, ""
-
-    # Caso 3: formato suelto SIN número — bandeja, bolsa, manojo, unidad, docena...
-    FORMATOS_SIN_NUMERO = {
-        "bandeja", "bolsa", "manojo", "unidad", "docena"
-    }
-    if f in FORMATOS_SIN_NUMERO:
-        return 1, f, f
-
-    # Caso 4: unidades métricas SUELTAS — PROHIBIDAS
-    # "kg", "g", "gr", "l", "ml" → estas NO deben producir unidad_base
-    UNIDADES_METRICAS = {"kg", "g", "gr", "l", "ml"}
-    if f in UNIDADES_METRICAS:
-        # NO aceptar estas como unidad_base porque vienen de OCR roto
-        return 1, "unidad", ""
-
-    # Caso 5: mezcla tipo "bandeja 125gr"
-    m = re.search(r"([\d.,]+)\s*(kg|g|gr|l|ml)", f)
-    if m:
-        cantidad = float(m.group(1).replace(",", "."))
-        unidad = m.group(2)
-        return cantidad, unidad, f
-
-    # Nada encontrado
-    return 1, "unidad", ""
-
-# Diccionario básico de productos (puedes ampliarlo)
 DICCIONARIO_PRODUCTOS = [
-    # Verduras y hortalizas
-    "Tomate", "Tomate Pera", "Tomate Cherry", "Tomate Rama", "Tomate Ensalada",
-    "Cebolla", "Cebolla Morada", "Cebolleta", "Chalota", "Puerro",
-    "Apio", "Ajo", "Ajetes", "Berenjena", "Pepino", "Zanahoria",
-    "Calabacín", "Calabaza", "Calabaza Violina", "Brócoli", "Col",
-    "Col Kale", "Coliflor", "Borraja", "Pak Choi", "Daikon",
-
-    # Frutas
-    "Manzana", "Manzana Fuji", "Manzana Golden", "Manzana Reineta",
-    "Mandarina", "Naranja", "Naranja Zumo", "Pera", "Melón", "Sandía",
-    "Aguacate", "Limón", "Lima", "Granadas", "Uvas", "Kiwi",
-
-    # Hierbas y hojas
-    "Cilantro", "Perejil", "Eneldo", "Tomillo", "Romero", "Orégano",
-    "Albahaca", "Menta", "Hierbabuena", "Rúcula", "Berros", "Mezclum",
-    "Micro Mezclum", "Tagete", "Pensamiento",
-
-    # Setas
-    "Champiñón", "Portobello", "Setas", "Shiitake",
-
-    # Frutos secos y semillas
-    "Almendras", "Nueces", "Anacardos", "Pistachos", "Avellanas",
-    "Pasas", "Sésamo", "Pipas Calabaza", "Pipas Girasol",
-
-    # Especias
-    "Pimentón", "Curry", "Comino", "Cúrcuma", "Pimienta",
-    "Ají", "Mostaza", "Orégano Hoja",
-
-    # Otros básicos
-    "Aceite", "Aceite Girasol", "Aceite Oliva", "Vinagre", "Harina",
-    "Cartón", "Huevos", "Azafrán",
-
-    # Formatos habituales (para ayudar autocorrección)
-    "Bandeja", "Bolsa", "Manojo", "Docena",
+    "Jalapeños","Aguacate","Aguacate Hass","Pomelos",
+    "Pimientos","Cebolla","Tomate","Manzana","Bananas",
+    "Carne","Filete","Vacuno","Pierna","Melocotón","Granadas"
 ]
 
-def autocorregir_nombre(nombre: str) -> str:
-    n = nombre.strip()
-    n = n.title()  # Normalizar capitalización
+def autocorregir_nombre(nombre: str):
+    n = nombre.strip().title()
 
-    # Correcciones OCR comunes
     reemplazos = {
-        "meocotón": "Melocotón",
-        "meon": "Melón",
-        "meón": "Melón",
-        "ciantro": "Cilantro",
-        "ciant": "Cilantro",
-        "ceboeta": "Cebolleta",
-        "uvas aedo": "Uvas",
-        "pátano": "Plátano",
-        "ranadas": "Granadas",
-        "for": "Flor",
-        "fora": "Flor",
-        "omabarda": "Lombarda",
-        "ombarda": "Lombarda",
-        "pensamimento": "Pensamiento",
-        "pensaminto": "Pensamiento",
-        "uarnición": "Guarnición",
-        "abahaca": "Albahaca",
-        "acachofas": "Alcachofas",
-        "peados": "Pelados",
-        "co kae": "Col Kale",
-        "pimenton duce": "Pimentón Dulce",
-        "pipas caabaza peadas": "Pipas Calabaza Peladas",
-        "noeces": "Nueces",
-        "amas": "Amas",  # ajustar según casos reales
-        "mezcum": "Mezclum",
-        "micromezcum": "Micromezclum",
-        "meocoton": "Melocotón",
-        "granio": "Granillo",
-        "fambuesa": "Frambuesa",
-        "physais": "Physalis",
+        "Jaapeños": "Jalapeños",
+        "Auacate": "Aguacate",
+        "Pomeos": "Pomelos",
     }
 
-    for k, v in reemplazos.items():
-        if k in n.lower():
+    for k,v in reemplazos.items():
+        if k.lower() in n.lower():
             return v
 
-    # Fuzzy matching extendido
-    dicc_ext = DICCIONARIO_PRODUCTOS + [p.lower() for p in DICCIONARIO_PRODUCTOS]
-
-    mejor = difflib.get_close_matches(n.lower(), dicc_ext, n=1, cutoff=0.68)
+    mejor = difflib.get_close_matches(n, DICCIONARIO_PRODUCTOS, n=1, cutoff=0.7)
     if mejor:
-        return mejor[0].title()
+        return mejor[0]
 
     return n
 
-# ====================================================================
-# 🔄 PROCESAR UN JOB INDIVIDUAL
-# ====================================================================
-def process_job(job):
-    print(f"\n==============================")
-    print(f"🟦 Procesando página {job['numero_pagina']} – {job['archivo_url']}")
-    print("==============================\n")
 
-    supabase.table("proveedor_listas_jobs") \
-        .update({"estado": "procesando"}) \
-        .eq("id", job["id"]).execute()
+# ======================================================
+# PROCESAR UN JOB
+# ======================================================
+def process_job(job):
+    print(f"\n======================")
+    print(f"Procesando página {job['numero_pagina']}")
+    print("======================\n")
+
+    supabase.table("proveedor_listas_jobs").update(
+        {"estado":"procesando"}
+    ).eq("id", job["id"]).execute()
 
     try:
-        # OCR
         text = ocr_google(job["archivo_url"])
 
-        log_debug("RAW OCR TEXT", text)
-        log_debug("RAW OCR LINES", text.split("\n"))
+        log_debug("RAW TEXT", text)
 
-
-        # Parse
         items = parse_items_inteligente(text)
+        print(f"✔ Detectados {len(items)} productos")
 
-        print(f"✔ Detectados {len(items)} productos.")
-
-        # Insertar uno por uno
         for item in items:
             item["proveedor_id"] = job["proveedor_id"]
             item["organizacion_id"] = job["organizacion_id"]
             item["creado_desde_archivo"] = job["lista_id"]
             item["pagina"] = job["numero_pagina"]
 
-            print(f"➡️ INSERT → {item['nombre']}")
-
             supabase.table("proveedor_listas_items").insert(item).execute()
 
-        # Marcar job como completado
-        supabase.table("proveedor_listas_jobs") \
-            .update({"estado": "procesado"}) \
-            .eq("id", job["id"]).execute()
+        supabase.table("proveedor_listas_jobs").update(
+            {"estado":"procesado"}
+        ).eq("id", job["id"]).execute()
 
-        print("✅ Página procesada correctamente.")
+        print("OK")
 
     except Exception as e:
-        print("❌ ERROR:", e)
-        supabase.table("proveedor_listas_jobs") \
-            .update({"estado": "error", "error": str(e)}) \
-            .eq("id", job["id"]).execute()
+        print("ERROR:", e)
+        supabase.table("proveedor_listas_jobs").update(
+            {"estado":"error", "error":str(e)}
+        ).eq("id", job["id"]).execute()
 
-# ====================================================================
-# 📊 ACTUALIZAR PROGRESO
-# ====================================================================
+
+# ======================================================
+# ACTUALIZAR PROGRESO
+# ======================================================
 def actualizar_progreso(lista_id):
-    procesados = supabase.table("proveedor_listas_jobs") \
-        .select("*", count="exact") \
-        .eq("lista_id", lista_id) \
-        .eq("estado", "procesado") \
-        .execute().count
+    procesados = supabase.table("proveedor_listas_jobs").select("*",count="exact").eq(
+        "lista_id", lista_id).eq("estado","procesado").execute().count
 
-    total = supabase.table("proveedor_listas_jobs") \
-        .select("*", count="exact") \
-        .eq("lista_id", lista_id) \
-        .execute().count
+    total = supabase.table("proveedor_listas_jobs").select("*",count="exact").eq(
+        "lista_id", lista_id).execute().count
 
     estado = "procesado" if procesados == total else "procesando"
 
-    supabase.table("proveedor_listas") \
-        .update({
-            "lotes_procesados": procesados,
-            "total_lotes": total,
-            "estado": estado
-        }) \
-        .eq("id", lista_id).execute()
+    supabase.table("proveedor_listas").update({
+        "lotes_procesados": procesados,
+        "total_lotes": total,
+        "estado": estado
+    }).eq("id", lista_id).execute()
 
-    print(f"📦 {procesados}/{total} lotes — Estado: {estado}")
+    print(f"📦 {procesados}/{total}")
 
-# ====================================================================
-# ▶ MAIN
-# ====================================================================
+
+# ======================================================
+# MAIN
+# ======================================================
 def main():
     jobs = supabase.table("proveedor_listas_jobs") \
         .select("*") \
@@ -612,13 +446,14 @@ def main():
         print("No pending jobs.")
         return
 
-    print(f"🔍 {len(jobs)} jobs pendientes.\n")
+    print(f"🔍 {len(jobs)} jobs encontrados")
 
     for job in jobs:
         process_job(job)
         actualizar_progreso(job["lista_id"])
 
-    print("\n✔ OCR COMPLETADO.")
+    print("✔ OCR COMPLETADO")
+
 
 if __name__ == "__main__":
     main()
