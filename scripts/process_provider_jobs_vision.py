@@ -505,7 +505,20 @@ def process_job(job):
             item["creado_desde_archivo"] = job["lista_id"]
             item["pagina"] = job["numero_pagina"]
 
-            supabase.table("proveedor_listas_items").insert(item).execute()
+            supabase.table("proveedor_listas_items").upsert(
+                item,
+                on_conflict="proveedor_id,organizacion_id,nombre"
+            ).execute()
+            supabase.table("proveedor_listas_precios_historial").insert({
+                "proveedor_id": job["proveedor_id"],
+                "organizacion_id": job["organizacion_id"],
+                "nombre": item["nombre"],
+                "precio": item["precio"],
+                "unidad_base": item["unidad_base"],
+                "formato_presentacion": item["formato_presentacion"],
+                "source_lista_id": job["lista_id"],
+            }).execute()
+
 
         supabase.table("proveedor_listas_jobs").update(
             {"estado":"procesado"}
