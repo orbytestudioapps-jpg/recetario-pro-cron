@@ -16,6 +16,58 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 client_vision = vision.ImageAnnotatorClient()
 
+
+# ======================================================
+# 🧹 STOPWORDS Y FILTRO DE LÍNEAS BASURA
+# ======================================================
+STOPWORDS = [
+    "% iva",
+    "importe iva",
+    "nombre:",
+    "cajas:",
+    "lineas:",
+    "líneas:",
+    "suma",
+    "registro sanitario",
+    "no se admiten",
+    "total cajas",
+    "frutas javier cuevas",
+    "javier cuevas",
+    "no se admiten devoluciones",
+    "horas desde la entrega",
+]
+
+def linea_es_basura(texto: str) -> bool:
+    t = texto.lower().strip()
+    if len(t) < 2:
+        return True
+    return any(sw in t for sw in STOPWORDS)
+
+
+# ======================================================
+# 📏 NORMALIZAR UNIDADES (kg, g, L, mL)
+# ======================================================
+def normalizarUnidad(u: str):
+    if not u:
+        return u
+
+    t = u.lower().strip()
+
+    if t in ["kg", "kilo", "kilos", "kgs", "kg."]:
+        return "kg"
+
+    if t in ["g", "gr", "grs", "gramos", "gr.", "g."]:
+        return "g"
+
+    if t in ["l", "lt", "litro", "litros", "l."]:
+        return "L"
+
+    if t in ["ml", "mililitro", "mililitros", "ml."]:
+        return "mL"
+
+    return u
+
+
 # ======================================================
 # 🔍 OCR GOOGLE VISION
 # ======================================================
@@ -51,7 +103,6 @@ def log_debug(section: str, data=None):
 # ======================================================
 # 🚀 PARSER UNIVERSAL DE TEXTOS OCR
 # ======================================================
-
 def parse_items_inteligente(text: str):
     text = (
         text.replace("\t", " ")
@@ -62,7 +113,7 @@ def parse_items_inteligente(text: str):
 
     lines = [l.strip() for l in text.split("\n") if l.strip()]
 
-    log_debug("LÍNEAS TRAS NORMALIZACIÓN", lines[:50])
+    log_debug("LÍNEAS TRAS NORMALIZACIÓN (RAW)", lines[:80])
 
     # -------------------------------
     # PATTERNS CORREGIDOS (NO ROMPEN PALABRAS)
@@ -78,6 +129,7 @@ def parse_items_inteligente(text: str):
         re.IGNORECASE
     )
 
+    # códigos tipo AB12345
     codigo_re = re.compile(r"^[A-Za-z]{1,3}\d{2,6}$")
 
     # -----------------------------
@@ -96,9 +148,13 @@ def parse_items_inteligente(text: str):
             return False
         if any(b in s.upper() for b in blacklist):
             return False
+        if linea_es_basura(s):
+            return False
         return True
 
     lines = [l for l in lines if linea_valida(l)]
+
+    log_debug("LÍNEAS TRAS FILTRO BASURA", lines[:80])
 
     # -----------------------------
     # DETECCIÓN DE TIPO DE DOCUMENTO
@@ -120,7 +176,6 @@ def parse_items_inteligente(text: str):
     return parse_vertical(lines, precio_re, formato_re)
 
 
-
 # ======================================================
 # 🧾 DETECTAR FACTURA
 # ======================================================
@@ -140,7 +195,6 @@ def detectar_factura(lines):
                         hits += 1
 
     return hits >= 2  # mínimo dos líneas válidas
-
 
 
 # ======================================================
@@ -174,21 +228,20 @@ def parse_factura(lines, precio_re):
         desc = desc.replace(str(numeros[1]), "")
         desc = desc.strip(" -.")
 
-        desc = autocorregir_nombre(desc)
+        desc = normalizarNombre(desc)
 
         productos.append({
             "nombre": desc,
             "precio": precio,
-            "unidad_base": "kg",
+            "unidad_base": normalizarUnidad("kg"),
             "cantidad_presentacion": kilos,
-            "formato_presentacion": f"{kilos}kg",
+            "formato_presentacion": f"{kilos} kg",
             "iva_porcentaje": 10,
             "merma": 0,
         })
 
     log_debug("PRODUCTOS FACTURA", productos)
     return productos
-
 
 
 # ======================================================
@@ -220,7 +273,7 @@ def parse_lambweston(lines, precio_re):
         if precio is None:
             continue
 
-        nombre = autocorregir_nombre(nombre)
+        nombre = normalizarNombre(nombre)
 
         productos.append({
             "nombre": nombre,
@@ -236,7 +289,6 @@ def parse_lambweston(lines, precio_re):
     return productos
 
 
-
 # ======================================================
 # TABLA HORIZONTAL
 # ======================================================
@@ -244,6 +296,9 @@ def parse_tabla_horizontal(lines, precio_re, formato_re):
     productos = []
 
     for l in lines:
+        if linea_es_basura(l):
+            continue
+
         partes = [p.strip() for p in re.split(r"\s{2,}", l)]
         if len(partes) < 2:
             continue
@@ -261,12 +316,19 @@ def parse_tabla_horizontal(lines, precio_re, formato_re):
             continue
 
         nombre = partes[0]
-        nombre = autocorregir_nombre(nombre)
+        nombre = normalizarNombre(nombre)
+
+        # unidad base a partir del formato (si aplica)
+        unidad_base = "unidad"
+        if formato:
+            um = re.search(r"(kg|g|gr|l|ml)", formato, re.IGNORECASE)
+            if um:
+                unidad_base = normalizarUnidad(um.group(1))
 
         productos.append({
             "nombre": nombre,
             "precio": precio,
-            "unidad_base": "unidad",
+            "unidad_base": unidad_base,
             "cantidad_presentacion": 1,
             "formato_presentacion": formato,
             "iva_porcentaje": 10,
@@ -275,7 +337,6 @@ def parse_tabla_horizontal(lines, precio_re, formato_re):
 
     log_debug("PRODUCTOS TABLA", productos)
     return productos
-
 
 
 # ======================================================
@@ -287,6 +348,10 @@ def parse_vertical(lines, precio_re, formato_re):
 
     while i < len(lines):
         line = lines[i]
+
+        if linea_es_basura(line):
+            i += 1
+            continue
 
         # precios cerca
         pm = precio_re.search(line)
@@ -320,18 +385,33 @@ def parse_vertical(lines, precio_re, formato_re):
             nombre = nombre.replace(formato, "")
 
         nombre = nombre.strip(" -.").strip()
-        nombre = autocorregir_nombre(nombre)
+        nombre = normalizarNombre(nombre)
 
-        if nombre and len(nombre) > 2:
-            productos.append({
-                "nombre": nombre,
-                "precio": precio,
-                "unidad_base": "unidad",
-                "cantidad_presentacion": 1,
-                "formato_presentacion": formato,
-                "iva_porcentaje": 10,
-                "merma": 0,
-            })
+        # descartar nombres vacíos o muy cortos
+        if not nombre or len(nombre) <= 2:
+            i += skip + 1
+            continue
+
+        if linea_es_basura(nombre):
+            i += skip + 1
+            continue
+
+        # unidad base según formato
+        unidad_base = "unidad"
+        if formato:
+            um = re.search(r"(kg|g|gr|l|ml)", formato, re.IGNORECASE)
+            if um:
+                unidad_base = normalizarUnidad(um.group(1))
+
+        productos.append({
+            "nombre": nombre,
+            "precio": precio,
+            "unidad_base": unidad_base,
+            "cantidad_presentacion": 1,
+            "formato_presentacion": formato,
+            "iva_porcentaje": 10,
+            "merma": 0,
+        })
 
         i += skip + 1
 
@@ -339,11 +419,9 @@ def parse_vertical(lines, precio_re, formato_re):
     return productos
 
 
-
 # ======================================================
 # AUTOCORRECCIÓN SUAVE (sin eliminar letras)
 # ======================================================
-
 DICCIONARIO_PRODUCTOS = [
     "Jalapeños","Aguacate","Aguacate Hass","Pomelos",
     "Pimientos","Cebolla","Tomate","Manzana","Bananas",
@@ -371,6 +449,28 @@ def autocorregir_nombre(nombre: str):
 
 
 # ======================================================
+# NORMALIZAR NOMBRE DE PRODUCTO
+# ======================================================
+def normalizarNombre(nombre: str) -> str:
+    if not nombre:
+        return nombre
+
+    # Quitar códigos numéricos al inicio: "000062 Rabanos Kg" → "Rabanos Kg"
+    nombre = re.sub(r"^[0-9]{2,6}\s*", "", nombre)
+
+    # Espacios múltiples
+    nombre = re.sub(r"\s+", " ", nombre).strip(" .-").strip()
+
+    if not nombre:
+        return nombre
+
+    # Autocorrección + title
+    nombre = autocorregir_nombre(nombre)
+
+    return nombre
+
+
+# ======================================================
 # PROCESAR UN JOB
 # ======================================================
 def process_job(job):
@@ -388,7 +488,16 @@ def process_job(job):
         log_debug("RAW TEXT", text)
 
         items = parse_items_inteligente(text)
-        print(f"✔ Detectados {len(items)} productos")
+        print(f"✔ Detectados {len(items)} productos (antes de deduplicar)")
+
+        # 🔁 Eliminar duplicados por nombre+precio+formato_presentacion
+        unique = {}
+        for it in items:
+            key = f"{it['nombre']}|{it['precio']}|{it.get('formato_presentacion','')}"
+            unique[key] = it
+
+        items = list(unique.values())
+        print(f"✔ Tras eliminar duplicados: {len(items)} productos")
 
         for item in items:
             item["proveedor_id"] = job["proveedor_id"]
