@@ -6,7 +6,7 @@ on:
 
   # 👉 Cron automático cada 5 minutos (hora UTC)
   schedule:
-    - cron: "*/5 * * * *"
+   # - cron: "*/5 * * * *"
 
 concurrency:
   group: provider-ocr-google
